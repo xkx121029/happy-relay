@@ -729,6 +729,33 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 ---
 
+### 运维与备份
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/providers/health` | 各渠道的熔断状态（`open` / `fails` / `remain_sec`） |
+| POST | `/api/providers/{id}/reset` | 手动清除某个渠道的熔断状态 |
+| POST | `/api/providers/reset` | 清除全部渠道的熔断状态 |
+| GET | `/api/stats?days=7` | 用量报表：`by_model` / `by_provider` / `by_day` |
+| GET | `/api/backup` | 导出全部配置（JSON 下载） |
+| POST | `/api/backup` | 合并导入配置：同名渠道 / 模型 / 秘钥 / 技能会被更新，不删除现有数据 |
+| GET | `/metrics` | Prometheus 文本格式指标（无需鉴权） |
+
+熔断由环境变量 `RELAY_BREAKER_FAILS`（默认 5）与 `RELAY_BREAKER_COOLDOWN`（默认 60 秒）控制，设为 `0` 可关闭。
+熔断期间该渠道会被跳过；若全部渠道都在熔断中，则会忽略熔断照常尝试，避免出现完全不可用的死局。
+
+秘钥新增三个配额字段（均为 `0` 表示不限制）：`rpm`（每分钟请求上限）、`daily_quota`（每日请求上限）、`daily_tokens`（每日 token 上限）。
+超限时接口返回 429，`error.type` 为 `rate_limit_error` 或 `quota_exceeded_error`。
+
+`/metrics` 输出示例：
+
+```
+relay_requests_total{capability="chat",model="gpt-4o-mini",status="ok"} 12
+relay_request_duration_ms_avg{capability="chat",model="gpt-4o-mini"} 812.40
+relay_goroutines 11
+relay_memory_bytes 945560
+```
+
 ### 视频任务、日志与设置
 
 | 方法 | 路径 | 说明 |
