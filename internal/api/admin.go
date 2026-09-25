@@ -15,12 +15,6 @@ import (
 	"happy-relay/internal/store"
 )
 
-// 设置项键名。
-const (
-	SettingSystemModel = "system_model" // 系统级 AI 使用的对外模型名
-	SettingPanelTitle  = "panel_title"
-)
-
 // ---------- 健康检查 ----------
 
 // handleHealth 供部署探活使用，不鉴权也不触达数据库。
@@ -55,6 +49,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		},
 		"video_presets": videoPresets(),
 		"settings":      settings,
+		// runtime 暴露当前生效的运行参数与默认值，供设置页展示「留空即用默认」。
+		"runtime": map[string]any{
+			"values":   s.options(),
+			"defaults": s.defaultOptions(),
+		},
 	})
 }
 
@@ -577,6 +576,8 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 让运行参数立即生效，无需重启服务。
+	s.reloadOptions()
 	settings, _ := s.st.AllSettings()
 	writeJSON(w, http.StatusOK, settings)
 }

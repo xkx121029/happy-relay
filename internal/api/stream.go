@@ -17,10 +17,11 @@ const (
 // smoothEmit 把上游一次吐出的长文本拆成小段，按目标速率匀速下发，
 // 让客户端的流式观感更均匀。思考内容、工具调用与结束标记等元信息不会丢失。
 func (s *Server) smoothEmit(emit relay.StreamFunc) relay.StreamFunc {
-	if emit == nil || !s.cfg.StreamSmooth || s.cfg.StreamRate <= 0 {
+	opts := s.options()
+	if emit == nil || !opts.StreamSmooth || opts.StreamRate <= 0 {
 		return emit
 	}
-	rate := float64(s.cfg.StreamRate)
+	rate := float64(opts.StreamRate)
 	start := time.Now()
 	sent := 0
 	return func(d relay.StreamDelta) error {
@@ -65,7 +66,7 @@ func (s *Server) smoothEmit(emit relay.StreamFunc) relay.StreamFunc {
 // startHeartbeat 周期发送 SSE 注释行，防止中间代理因长时间空闲而断开连接。
 // 返回的停止函数会等待心跳协程退出，确保之后不再有并发写入。
 func (s *Server) startHeartbeat(sse *sseWriter) func() {
-	interval := s.cfg.HeartbeatSec
+	interval := s.options().HeartbeatSec
 	if interval <= 0 {
 		return func() {}
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"happy-relay/internal/config"
@@ -25,10 +26,14 @@ type Server struct {
 	eng     *relay.Engine
 	static  fs.FS
 	limiter *keyLimiter
+	// opts 缓存当前生效的运行参数，保存设置后热更新，读取无锁。
+	opts atomic.Pointer[Options]
 }
 
 func New(cfg *config.Config, st *store.Store, eng *relay.Engine, static fs.FS) *Server {
-	return &Server{cfg: cfg, st: st, eng: eng, static: static, limiter: newKeyLimiter()}
+	s := &Server{cfg: cfg, st: st, eng: eng, static: static, limiter: newKeyLimiter()}
+	s.reloadOptions()
+	return s
 }
 
 func (s *Server) Handler() http.Handler {

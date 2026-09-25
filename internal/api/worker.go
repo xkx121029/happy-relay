@@ -15,18 +15,17 @@ func (s *Server) StartBackground(ctx context.Context) {
 }
 
 // videoLoop 周期性刷新未完成的视频任务状态。
+// 每轮重新读取间隔，这样在面板上调整轮询频率后无需重启即可生效。
 func (s *Server) videoLoop(ctx context.Context) {
-	interval := time.Duration(s.cfg.VideoPollSec) * time.Second
-	if interval < 3*time.Second {
-		interval = 3 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
+		interval := time.Duration(s.options().VideoPollSec) * time.Second
+		if interval < 3*time.Second {
+			interval = 3 * time.Second
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(interval):
 			s.pollPendingVideos(ctx)
 		}
 	}
@@ -66,7 +65,7 @@ func (s *Server) logTrimLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.st.TrimUsageLogs(s.cfg.MaxLogRows)
+			s.st.TrimUsageLogs(s.options().MaxLogRows)
 		}
 	}
 }

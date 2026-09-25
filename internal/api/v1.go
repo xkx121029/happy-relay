@@ -161,7 +161,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 	}
 
 	requestBody := ""
-	if !s.cfg.DisableLogBody {
+	if s.options().LogBody {
 		requestBody = previewOf(in.Raw, 4000)
 	}
 
@@ -396,7 +396,7 @@ func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIK
 	}
 	start := time.Now()
 	requestBody := ""
-	if !s.cfg.DisableLogBody {
+	if s.options().LogBody {
 		requestBody = previewOf(raw, 2000)
 	}
 	out, usedProvider, err := s.eng.Image(r.Context(), m, ps, in)
