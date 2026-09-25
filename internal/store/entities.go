@@ -182,6 +182,9 @@ type ResponseMap struct {
 type ModelConfig struct {
 	SystemPrompt string         `json:"system_prompt,omitempty"`
 	Defaults     map[string]any `json:"defaults,omitempty"` // 合并进上游请求体的默认参数
+	// RouteStrategy 决定一个对外模型绑定多个渠道时的调度方式：
+	// failover（默认，按绑定顺序逐个尝试）| round_robin | random
+	RouteStrategy string `json:"route_strategy,omitempty"`
 	// 以下仅在渠道类型为 template，或能力为 video 时生效
 	Chat       *TemplateSpec `json:"chat,omitempty"`
 	Image      *TemplateSpec `json:"image,omitempty"`
@@ -189,10 +192,13 @@ type ModelConfig struct {
 	VideoQuery *TemplateSpec `json:"video_query,omitempty"`
 }
 
-// Model 是对外暴露的一个模型名，映射到某个渠道下的上游模型。
+// Model 是对外暴露的一个模型名，可聚合多个上游渠道。
+// ProviderIDs 为绑定的渠道列表（有序，首个为默认），ProviderID 冗余保存首个，
+// 既兼容旧数据，也维持与 providers 的外键约束。
 type Model struct {
 	ID           int64       `json:"id"`
 	ProviderID   int64       `json:"provider_id"`
+	ProviderIDs  []int64     `json:"provider_ids"`
 	ProviderName string      `json:"provider_name,omitempty"`
 	ProviderKind string      `json:"provider_kind,omitempty"`
 	Name         string      `json:"name"`
@@ -205,8 +211,17 @@ type Model struct {
 	UpdatedAt    string      `json:"updated_at"`
 }
 
+// AllProviderIDs 返回模型绑定的全部渠道 ID（有序去重）。旧数据只有 provider_id 时回退到单渠道。
+func (m Model) AllProviderIDs() []int64 {
+	ids := cleanIDs(m.ProviderIDs)
+	if len(ids) == 0 && m.ProviderID > 0 {
+		ids = []int64{m.ProviderID}
+	}
+	return ids
+}
+
 const modelSelect = `SELECT m.id,m.provider_id,COALESCE(p.name,''),COALESCE(p.kind,''),m.name,
-	m.upstream_name,m.capability,m.config,m.enabled,m.remark,m.created_at,m.updated_at
+	m.upstream_name,m.capability,m.config,m.enabled,m.remark,m.created_at,m.updated_at,m.provider_ids
 	FROM models m LEFT JOIN providers p ON p.id=m.provider_id`
 
 func (s *Store) ListModels() ([]Model, error) {
@@ -245,13 +260,15 @@ func (s *Store) ResolveModel(name string) (Model, error) {
 
 func scanModel(sc scanner) (Model, error) {
 	var m Model
-	var cfg string
+	var cfg, providerIDs string
 	var enabled int
 	if err := sc.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderKind, &m.Name,
-		&m.UpstreamName, &m.Capability, &cfg, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		&m.UpstreamName, &m.Capability, &cfg, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt,
+		&providerIDs); err != nil {
 		return Model{}, err
 	}
 	m.Config = unmarshal(cfg, ModelConfig{})
+	m.ProviderIDs = cleanIDs(unmarshal(providerIDs, []int64{}))
 	m.Enabled = enabled == 1
 	return m, nil
 }
@@ -269,15 +286,27 @@ func (s *Store) SaveModel(m Model) (Model, error) {
 	default:
 		m.Capability = CapChat
 	}
-	if _, err := s.GetProvider(m.ProviderID); err != nil {
-		return m, errors.New("请选择有效的渠道")
+	ids := cleanIDs(m.ProviderIDs)
+	if len(ids) == 0 && m.ProviderID > 0 {
+		ids = []int64{m.ProviderID}
 	}
+	if len(ids) == 0 {
+		return m, errors.New("请至少选择一个渠道")
+	}
+	for _, id := range ids {
+		if _, err := s.GetProvider(id); err != nil {
+			return m, errors.New("绑定的渠道不存在，请重新选择")
+		}
+	}
+	m.ProviderIDs = ids
+	// provider_id 冗余保存首个渠道，维持外键约束并兼容旧数据。
+	m.ProviderID = ids[0]
 	ts := now()
 	if m.ID == 0 {
 		res, err := s.db.Exec(`INSERT INTO models
-			(provider_id,name,upstream_name,capability,config,enabled,remark,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?)`,
-			m.ProviderID, m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
+			(provider_id,provider_ids,name,upstream_name,capability,config,enabled,remark,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			m.ProviderID, marshal(m.ProviderIDs), m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
 			boolInt(m.Enabled), m.Remark, ts, ts)
 		if err != nil {
 			return m, err
@@ -285,9 +314,9 @@ func (s *Store) SaveModel(m Model) (Model, error) {
 		m.ID, _ = res.LastInsertId()
 		m.CreatedAt, m.UpdatedAt = ts, ts
 	} else {
-		if _, err := s.db.Exec(`UPDATE models SET provider_id=?,name=?,upstream_name=?,
+		if _, err := s.db.Exec(`UPDATE models SET provider_id=?,provider_ids=?,name=?,upstream_name=?,
 			capability=?,config=?,enabled=?,remark=?,updated_at=? WHERE id=?`,
-			m.ProviderID, m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
+			m.ProviderID, marshal(m.ProviderIDs), m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
 			boolInt(m.Enabled), m.Remark, ts, m.ID); err != nil {
 			return m, err
 		}

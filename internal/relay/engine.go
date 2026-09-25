@@ -22,20 +22,22 @@ type Adapter interface {
 	Embedding(ctx context.Context, up Upstream, m store.Model, in *EmbeddingInput) (*EmbeddingOutput, error)
 }
 
-// Engine 负责解析模型、挑选入口与密钥、调用适配器并做故障转移。
+// Engine 负责解析模型、挑选渠道与入口、调用适配器并做故障转移。
 type Engine struct {
 	st       *store.Store
 	client   *http.Client
 	mu       sync.Mutex
-	rr       map[int64]int
+	rr       map[int64]int // 渠道内轮询游标（按渠道 ID）
+	rrModel  map[int64]int // 跨渠道轮询游标（按模型 ID）
 	adapters map[string]Adapter
 }
 
 func NewEngine(st *store.Store) *Engine {
 	e := &Engine{
-		st:     st,
-		client: &http.Client{},
-		rr:     map[int64]int{},
+		st:      st,
+		client:  &http.Client{},
+		rr:      map[int64]int{},
+		rrModel: map[int64]int{},
 	}
 	e.adapters = map[string]Adapter{
 		store.KindOpenAI:    &OpenAIAdapter{},
@@ -126,30 +128,83 @@ func (e *Engine) clientFor(p store.Provider) *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// Resolve 按对外模型名解析出模型与渠道。
+// Resolve 按对外模型名解析出模型与首个渠道（兼容旧调用方）。
 func (e *Engine) Resolve(name string) (store.Model, store.Provider, error) {
-	m, err := e.st.ResolveModel(name)
+	m, ps, err := e.ResolveAll(name)
 	if err != nil {
 		return store.Model{}, store.Provider{}, err
 	}
-	p, err := e.st.GetProvider(m.ProviderID)
-	if err != nil {
-		return store.Model{}, store.Provider{}, err
-	}
-	if !p.Enabled {
-		return store.Model{}, store.Provider{}, errors.New("该模型所属渠道已停用")
-	}
-	return m, p, nil
+	return m, ps[0], nil
 }
 
-func (e *Engine) adapterFor(m store.Model, capability string) (Adapter, error) {
+// ResolveAll 按对外模型名解析出模型及其绑定的全部可用渠道（保持绑定顺序）。
+func (e *Engine) ResolveAll(name string) (store.Model, []store.Provider, error) {
+	m, err := e.st.ResolveModel(name)
+	if err != nil {
+		return store.Model{}, nil, err
+	}
+	ps, err := e.providersFor(m)
+	if err != nil {
+		return store.Model{}, nil, err
+	}
+	return m, ps, nil
+}
+
+// providersFor 加载模型绑定的渠道，跳过已删除或已停用的项。
+func (e *Engine) providersFor(m store.Model) ([]store.Provider, error) {
+	ids := m.AllProviderIDs()
+	out := make([]store.Provider, 0, len(ids))
+	var disabled []string
+	for _, id := range ids {
+		p, err := e.st.GetProvider(id)
+		if err != nil {
+			continue
+		}
+		if !p.Enabled {
+			disabled = append(disabled, p.Name)
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		if len(disabled) > 0 {
+			return nil, errors.New("该模型绑定的渠道均已停用：" + strings.Join(disabled, "、"))
+		}
+		return nil, errors.New("该模型未绑定任何可用渠道，请在「模型」里选择渠道")
+	}
+	return out, nil
+}
+
+// orderProviders 按模型的跨渠道调度策略调整尝试顺序：
+// failover（默认）按绑定顺序；round_robin 依次轮转；random 随机打乱。
+func (e *Engine) orderProviders(m store.Model, ps []store.Provider) []store.Provider {
+	out := append([]store.Provider(nil), ps...)
+	if len(out) <= 1 {
+		return out
+	}
+	switch m.Config.RouteStrategy {
+	case "random":
+		rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	case "round_robin":
+		e.mu.Lock()
+		start := e.rrModel[m.ID] % len(out)
+		e.rrModel[m.ID]++
+		e.mu.Unlock()
+		out = append(out[start:], out[:start]...)
+	default: // failover
+	}
+	return out
+}
+
+// adapterFor 按当前渠道类型选择适配器；视频能力固定走模板适配器。
+func (e *Engine) adapterFor(kind, capability string) (Adapter, error) {
 	if capability == store.CapChat || capability == store.CapImage || capability == store.CapEmbedding {
-		if m.ProviderKind == store.KindTemplate {
+		if kind == store.KindTemplate {
 			return e.adapters[store.KindTemplate], nil
 		}
-		a, ok := e.adapters[m.ProviderKind]
+		a, ok := e.adapters[kind]
 		if !ok {
-			return nil, errors.New("未知的渠道类型：" + m.ProviderKind)
+			return nil, errors.New("未知的渠道类型：" + kind)
 		}
 		return a, nil
 	}
@@ -159,87 +214,120 @@ func (e *Engine) adapterFor(m store.Model, capability string) (Adapter, error) {
 	return nil, ErrUnsupported
 }
 
-// Chat 执行一次对话调用，up 上的失败会自动切换到下一个候选入口/密钥。
-// 一旦流式内容已经开始下发，则不再切换，避免客户端收到重复内容。
-func (e *Engine) Chat(ctx context.Context, m store.Model, p store.Provider, in *ChatInput, emit StreamFunc) (*ChatOutput, store.Provider, error) {
-	a, err := e.adapterFor(m, store.CapChat)
-	if err != nil {
-		return nil, p, err
-	}
+// Chat 执行一次对话调用：先在渠道内切换入口/密钥，再跨渠道切换。
+// 一旦流式内容已经开始下发，则立即停止切换，避免客户端收到重复内容。
+func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, in *ChatInput, emit StreamFunc) (*ChatOutput, store.Provider, error) {
 	mergeDefaults(m, in)
 	if sp := m.Config.SystemPrompt; sp != "" && in.SystemPrompt() == "" {
 		in.Messages = append([]ChatMessage{{Role: "system", Content: sp}}, in.Messages...)
 	}
-	cands := e.candidates(p)
-	if len(cands) == 0 {
-		return nil, p, errors.New("渠道未配置任何入口地址")
-	}
 	var lastErr error
-	for i, up := range cands {
-		emitted := false
-		var wrapped StreamFunc
-		if emit != nil {
-			wrapped = func(d StreamDelta) error {
-				emitted = true
-				return emit(d)
+	var lastProvider store.Provider
+	for _, p := range e.orderProviders(m, ps) {
+		lastProvider = p
+		a, err := e.adapterFor(p.Kind, store.CapChat)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		cands := e.candidates(p)
+		if len(cands) == 0 {
+			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			continue
+		}
+		for _, up := range cands {
+			emitted := false
+			var wrapped StreamFunc
+			if emit != nil {
+				wrapped = func(d StreamDelta) error {
+					emitted = true
+					return emit(d)
+				}
 			}
-		}
-		out, err := a.Chat(withContext(ctx), up, m, in, wrapped)
-		if err == nil {
-			if i > 0 {
-				// 主入口失败后由备用入口承接，记录以便排查。
-				lastErr = nil
+			out, err := a.Chat(withContext(ctx), up, m, in, wrapped)
+			if err == nil {
+				return out, up.Provider, nil
 			}
-			return out, up.Provider, nil
-		}
-		lastErr = err
-		if emitted {
-			return nil, up.Provider, err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return nil, up.Provider, err
+			lastErr = err
+			if emitted {
+				return nil, up.Provider, err
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return nil, up.Provider, err
+			}
 		}
 	}
-	return nil, p, lastErr
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的上游渠道")
+	}
+	return nil, lastProvider, lastErr
 }
 
-// Image 执行一次图片生成调用。
-func (e *Engine) Image(ctx context.Context, m store.Model, p store.Provider, in *ImageInput) (*ImageOutput, store.Provider, error) {
-	a, err := e.adapterFor(m, store.CapImage)
-	if err != nil {
-		return nil, p, err
-	}
+// Image 执行一次图片生成调用，失败时在渠道与入口之间自动切换。
+func (e *Engine) Image(ctx context.Context, m store.Model, ps []store.Provider, in *ImageInput) (*ImageOutput, store.Provider, error) {
 	mergeImageDefaults(m, in)
-	cands := e.candidates(p)
 	var lastErr error
-	for _, up := range cands {
-		out, err := a.Image(withContext(ctx), up, m, in)
-		if err == nil {
-			return out, up.Provider, nil
+	var lastProvider store.Provider
+	for _, p := range e.orderProviders(m, ps) {
+		lastProvider = p
+		a, err := e.adapterFor(p.Kind, store.CapImage)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		lastErr = err
-		if ctx != nil && ctx.Err() != nil {
-			break
+		cands := e.candidates(p)
+		if len(cands) == 0 {
+			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			continue
+		}
+		for _, up := range cands {
+			out, err := a.Image(withContext(ctx), up, m, in)
+			if err == nil {
+				return out, up.Provider, nil
+			}
+			lastErr = err
+			if ctx != nil && ctx.Err() != nil {
+				return nil, up.Provider, err
+			}
 		}
 	}
-	return nil, p, lastErr
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的上游渠道")
+	}
+	return nil, lastProvider, lastErr
 }
 
-// Embedding 执行一次向量化调用。
-func (e *Engine) Embedding(ctx context.Context, m store.Model, p store.Provider, in *EmbeddingInput) (*EmbeddingOutput, store.Provider, error) {
-	a, err := e.adapterFor(m, store.CapEmbedding)
-	if err != nil {
-		return nil, p, err
-	}
+// Embedding 执行一次向量化调用，失败时在渠道与入口之间自动切换。
+func (e *Engine) Embedding(ctx context.Context, m store.Model, ps []store.Provider, in *EmbeddingInput) (*EmbeddingOutput, store.Provider, error) {
 	var lastErr error
-	for _, up := range e.candidates(p) {
-		out, err := a.Embedding(withContext(ctx), up, m, in)
-		if err == nil {
-			return out, up.Provider, nil
+	var lastProvider store.Provider
+	for _, p := range e.orderProviders(m, ps) {
+		lastProvider = p
+		a, err := e.adapterFor(p.Kind, store.CapEmbedding)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		lastErr = err
+		cands := e.candidates(p)
+		if len(cands) == 0 {
+			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			continue
+		}
+		for _, up := range cands {
+			out, err := a.Embedding(withContext(ctx), up, m, in)
+			if err == nil {
+				return out, up.Provider, nil
+			}
+			lastErr = err
+			if ctx != nil && ctx.Err() != nil {
+				return nil, up.Provider, err
+			}
+		}
 	}
-	return nil, p, lastErr
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的上游渠道")
+	}
+	return nil, lastProvider, lastErr
 }
 
 // mergeDefaults 把模型配置里的默认参数补进请求（不覆盖用户显式传入的值）。

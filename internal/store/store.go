@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS providers (
 CREATE TABLE IF NOT EXISTS models (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id   INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  provider_ids  TEXT    NOT NULL DEFAULT '[]',
   name          TEXT    NOT NULL UNIQUE,
   upstream_name TEXT    NOT NULL,
   capability    TEXT    NOT NULL,
@@ -147,7 +148,43 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
+	// 老库升级：models 表补充 provider_ids 列，用于「一个模型聚合多个上游」。
+	if err := s.addColumnIfMissing("models", "provider_ids", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	return s.seedBuiltinSkills()
+}
+
+// addColumnIfMissing 为已存在的表补充新列，用于无版本号的轻量迁移。
+// 由于连接池被限定为单连接，必须在关闭游标后再执行 ALTER。
+func (s *Store) addColumnIfMissing(table, column, ddl string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, colType string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl)
+	return err
 }
 
 func now() string { return time.Now().Format(time.RFC3339) }
