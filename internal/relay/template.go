@@ -109,6 +109,7 @@ func buildTemplateVars(up Upstream, m store.Model, chat *ChatInput, image *Image
 		"system":         "",
 		"image":          "",
 		"image_url":      "",
+		"images":         []string{},
 		"size":           "",
 		"n":              0,
 		"duration":       "",
@@ -133,7 +134,12 @@ func buildTemplateVars(up Upstream, m store.Model, chat *ChatInput, image *Image
 		vars["size"] = image.Size
 		vars["n"] = image.N
 		vars["duration"] = templateOptionString(image.Options, "duration")
-		if ref := firstNonEmpty(
+		// 输入参考图：{{images}} 是完整数组，{{image}} / {{image_url}} 取第一张。
+		if len(image.Images) > 0 {
+			vars["images"] = image.Images
+			vars["image"] = image.Images[0]
+			vars["image_url"] = image.Images[0]
+		} else if ref := firstNonEmpty(
 			templateOptionString(image.Options, "image"),
 			templateOptionString(image.Options, "image_url"),
 		); ref != "" {

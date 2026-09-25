@@ -277,6 +277,10 @@ type ModelConfig struct {
 	// Tier 是模型档位，供 auto 自动路由按任务难度挑选：light | standard | pro。
 	// 留空时按上游模型名启发式推断。
 	Tier string `json:"tier,omitempty"`
+	// ImageMode 决定图片请求体的组装方式：
+	// standard（默认，OpenAI 标准：response_format 与参考图放顶层）
+	// extra_body（Agnes Image 2.1 Flash 等要求把 response_format / image 放进 extra_body）
+	ImageMode string `json:"image_mode,omitempty"`
 	// 以下仅在渠道类型为 template，或能力为 video 时生效
 	Chat       *TemplateSpec `json:"chat,omitempty"`
 	Image      *TemplateSpec `json:"image,omitempty"`
@@ -289,6 +293,15 @@ const (
 	TierLight    = "light"
 	TierStandard = "standard"
 	TierPro      = "pro"
+)
+
+// 图片请求体组装模式。
+const (
+	// ImageModeStandard 是默认值：遵循 OpenAI 标准，response_format 与参考图放请求体顶层。
+	ImageModeStandard = "standard"
+	// ImageModeExtraBody 把 response_format 与参考图合并进 extra_body，
+	// 用于 Agnes Image 2.1 Flash 这类明确禁止顶层 response_format 的上游。
+	ImageModeExtraBody = "extra_body"
 )
 
 // ModelInput 是模型的一个上游输入：某渠道下的某个具体上游模型。

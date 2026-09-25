@@ -199,7 +199,13 @@ func (t *toolAccumulator) result() []ToolCall {
 	return out
 }
 
-func (a *OpenAIAdapter) Image(ctx context.Context, up Upstream, m store.Model, in *ImageInput) (*ImageOutput, error) {
+// buildImageBody 组装图片生成请求体。
+//
+// 默认（standard）遵循 OpenAI 标准：response_format 与参考图放请求体顶层。
+// 当模型配置 image_mode=extra_body 时（如 Agnes Image 2.1 Flash 明确要求），
+// 这两类字段会被合并进 extra_body，避免顶层出现 response_format 导致上游报错。
+// 客户端自己传入的 extra_body 字段优先，不会被覆盖。
+func buildImageBody(m store.Model, in *ImageInput) map[string]any {
 	body := map[string]any{
 		"model":  m.UpstreamName,
 		"prompt": in.Prompt,
@@ -210,14 +216,51 @@ func (a *OpenAIAdapter) Image(ctx context.Context, up Upstream, m store.Model, i
 	if in.Size != "" {
 		body["size"] = in.Size
 	}
-	if in.ResponseFormat != "" {
-		body["response_format"] = in.ResponseFormat
+
+	extra := map[string]any{}
+	if raw, ok := in.Options["extra_body"].(map[string]any); ok {
+		for k, v := range raw {
+			extra[k] = v
+		}
 	}
+	useExtra := m.Config.ImageMode == store.ImageModeExtraBody
+
+	if len(in.Images) > 0 {
+		if useExtra {
+			if _, exists := extra["image"]; !exists {
+				extra["image"] = in.Images
+			}
+		} else {
+			body["image"] = in.Images
+		}
+	}
+	if in.ResponseFormat != "" {
+		if useExtra {
+			if _, exists := extra["response_format"]; !exists {
+				extra["response_format"] = in.ResponseFormat
+			}
+		} else {
+			body["response_format"] = in.ResponseFormat
+		}
+	}
+
+	// 其余参数原样透传，已显式设置的字段优先。
 	for k, v := range in.Options {
+		if k == "extra_body" {
+			continue
+		}
 		if _, exists := body[k]; !exists {
 			body[k] = v
 		}
 	}
+	if len(extra) > 0 {
+		body["extra_body"] = extra
+	}
+	return body
+}
+
+func (a *OpenAIAdapter) Image(ctx context.Context, up Upstream, m store.Model, in *ImageInput) (*ImageOutput, error) {
+	body := buildImageBody(m, in)
 	resp, err := doJSON(ctx, up, "POST", a.url(up, "/images/generations"), authHeader(up), body)
 	if err != nil {
 		return nil, err

@@ -46,6 +46,8 @@ export interface ModelConfig {
   route_strategy?: string
   /** 模型档位，供 auto 自动按任务难度挑选：light | standard | pro */
   tier?: string
+  /** 图片请求体组装模式：standard（默认）| extra_body（Agnes 等要求放进 extra_body） */
+  image_mode?: string
   chat?: TemplateSpec | null
   image?: TemplateSpec | null
   video?: TemplateSpec | null

@@ -113,7 +113,9 @@ type ImageInput struct {
 	N              int
 	Size           string
 	ResponseFormat string // url | b64_json
-	Options        map[string]any
+	// Images 是输入参考图（公共 URL 或 data URI），用于图生图与多图合成。
+	Images  []string
+	Options map[string]any
 }
 
 type ImageOutput struct {

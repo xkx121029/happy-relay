@@ -380,9 +380,11 @@ func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIK
 	if n, ok := raw["n"].(float64); ok {
 		in.N = int(n)
 	}
+	in.Images = parseImageRefs(raw)
 	for k, v := range raw {
 		switch k {
-		case "model", "prompt", "n", "size", "response_format":
+		case "model", "prompt", "n", "size", "response_format",
+			"image", "images", "image_url", "input_image", "reference_images":
 			continue
 		}
 		in.Options[k] = v
@@ -703,6 +705,40 @@ func firstProvider(ps []store.Provider) store.Provider {
 		return ps[0]
 	}
 	return store.Provider{}
+}
+
+// parseImageRefs 收集图片请求里的输入参考图（图生图 / 多图合成）。
+// 兼容常见字段名，并额外识别 Agnes 等把输入图放在 extra_body.image 的写法。
+func parseImageRefs(raw map[string]any) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	appendRef := func(v any) {
+		push := func(s string) {
+			if s = strings.TrimSpace(s); s == "" || seen[s] {
+				return
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+		switch t := v.(type) {
+		case string:
+			push(t)
+		case []any:
+			for _, it := range t {
+				if s, ok := it.(string); ok {
+					push(s)
+				}
+			}
+		}
+	}
+	for _, key := range []string{"image", "images", "image_url", "input_image", "reference_images"} {
+		appendRef(raw[key])
+	}
+	if extra, ok := raw["extra_body"].(map[string]any); ok {
+		appendRef(extra["image"])
+		appendRef(extra["images"])
+	}
+	return out
 }
 
 // providerNameByID 找出本次实际命中的渠道名，找不到时回退到首个渠道。
