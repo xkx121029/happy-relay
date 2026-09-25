@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,6 +166,54 @@ type probeModel struct {
 	ID         string `json:"id"`
 	Capability string `json:"capability"` // chat | image | video | embedding，空表示未识别
 	Hint       string `json:"hint,omitempty"`
+	// ContextLength 是从上游模型列表里读到的上下文窗口，读不到时为 0。
+	ContextLength int `json:"context_length,omitempty"`
+}
+
+// contextLengthKeys 是上游模型列表里可能出现的上下文长度字段。
+// 顺序上把「明确的上下文窗口」排在「输出上限」之前。
+var contextLengthKeys = []string{
+	"context_length", "context_window", "max_context_length", "context_size",
+	"max_input_tokens", "input_token_limit", "inputTokenLimit",
+	"max_model_len", "max_tokens",
+}
+
+// pickContextLength 从模型元数据里取出上下文长度，兼容 OpenAI 兼容层、
+// OpenRouter 与 Gemini 的常见字段命名；取不到时返回 0。
+func pickContextLength(obj map[string]any) int {
+	for _, key := range contextLengthKeys {
+		if n := toPositiveInt(obj[key]); n > 0 {
+			return n
+		}
+	}
+	// 部分上游把信息放在嵌套对象里。
+	for _, holder := range []string{"top_provider", "model_info", "metadata", "architecture", "limits"} {
+		if sub, ok := obj[holder].(map[string]any); ok {
+			if n := pickContextLength(sub); n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// toPositiveInt 把可能是数字或数字字符串的取值转成正整数，无法转换时返回 0。
+func toPositiveInt(v any) int {
+	switch t := v.(type) {
+	case float64:
+		if t > 0 {
+			return int(t)
+		}
+	case int:
+		if t > 0 {
+			return t
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // probeResult 是单个入口地址的连通性探测结果。
@@ -271,7 +320,10 @@ func extractModels(raw map[string]any, kind string) []probeModel {
 		}
 		seen[id] = true
 		capability, hint := inferCapability(id, obj, kind)
-		out = append(out, probeModel{ID: id, Capability: capability, Hint: hint})
+		out = append(out, probeModel{
+			ID: id, Capability: capability, Hint: hint,
+			ContextLength: pickContextLength(obj),
+		})
 	}
 	switch data := raw["data"].(type) {
 	case []any:

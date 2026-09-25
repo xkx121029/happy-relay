@@ -31,13 +31,18 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 		if m.Capability == store.CapChat && m.Name != relay.AutoModelName {
 			hasChat = true
 		}
-		data = append(data, map[string]any{
+		entry := map[string]any{
 			"id":         m.Name,
 			"object":     "model",
 			"created":    created,
 			"owned_by":   m.ProviderName,
 			"capability": m.Capability,
-		})
+		}
+		// 附带上下文窗口，便于客户端自行规划请求长度；未知时不输出该字段。
+		if n := m.EffectiveContextLength(); n > 0 {
+			entry["context_length"] = n
+		}
+		data = append(data, entry)
 	}
 	// 自动模型：按任务难度在已启用的文本模型里挑选。
 	if hasChat && keyAllowed(key, relay.AutoModelName) {
@@ -161,8 +166,23 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		return
 	}
 
+	// 上下文规划：按模型窗口估算输入占用，必要时自动裁剪历史或提前给出可读错误。
+	opts := s.options()
+	planned, plan, planErr := relay.PlanContext(in, m.EffectiveContextLength(),
+		opts.ContextSafetyPercent, opts.ContextPolicy)
+	if planErr != nil {
+		s.logUsage(store.UsageLog{
+			Capability: store.CapChat, Model: m.Name, ProviderName: providerNameByID(ps, m.ProviderID),
+			APIKeyName: key.Name, Status: 400, Stream: in.Stream,
+			LatencyMS: time.Since(start).Milliseconds(), Error: planErr.Error(),
+		})
+		writeErr(w, http.StatusBadRequest, "context_length_exceeded", planErr.Error())
+		return
+	}
+	in = planned
+
 	requestBody := ""
-	if s.options().LogBody {
+	if opts.LogBody {
 		requestBody = previewOf(in.Raw, 4000)
 	}
 
@@ -245,7 +265,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 			APIKeyName: key.Name, Status: 200, Stream: true, LatencyMS: latency,
 			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
 			RequestBody:     requestBody,
-			ResponsePreview: fmt.Sprintf("流式输出：正文 %d 字符，思考 %d 字符", contentLen, reasoningLen),
+			ResponsePreview: contextNote(plan) + fmt.Sprintf("流式输出：正文 %d 字符，思考 %d 字符", contentLen, reasoningLen),
 		})
 		return
 	}
@@ -296,7 +316,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 		APIKeyName: key.Name, Status: 200, LatencyMS: latency,
 		PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens,
-		RequestBody: requestBody, ResponsePreview: truncateStr(out.Content, 2000),
+		RequestBody: requestBody, ResponsePreview: contextNote(plan) + truncateStr(out.Content, 2000),
 	})
 }
 
@@ -716,6 +736,14 @@ func safeName(p store.Provider, fallback store.Provider) string {
 		return p.Name
 	}
 	return fallback.Name
+}
+
+// contextNote 在发生了上下文裁剪时给日志预览加前缀，便于排查「历史为何变短」。
+func contextNote(plan relay.ContextPlan) string {
+	if plan.Applied && plan.Trimmed > 0 {
+		return fmt.Sprintf("[已裁剪 %d 条历史消息] ", plan.Trimmed)
+	}
+	return ""
 }
 
 // firstProvider 取模型的默认渠道（绑定列表首个），用于日志兜底。
