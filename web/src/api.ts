@@ -127,6 +127,8 @@ export interface VideoTask {
   id: string
   object: string
   model: string
+  /** 实际命中的上游渠道（面板调试台返回） */
+  provider?: string
   status: string
   progress: number
   created_at: string
@@ -243,6 +245,8 @@ export interface StreamHandlers {
   onToolCalls?: (calls: any[]) => void
   onError?: (message: string) => void
   onDone?: () => void
+  /** 面板调试台专用：本次调用最终命中的上游渠道 */
+  onMeta?: (meta: { model?: string; provider?: string }) => void
 }
 
 export const api = {
@@ -374,6 +378,10 @@ export async function streamChat(
         }
         try {
           const chunk = JSON.parse(payload)
+          if (chunk.object === 'relay.meta') {
+            handlers.onMeta?.({ model: chunk.model, provider: chunk.provider })
+            continue
+          }
           if (chunk.error) {
             handlers.onError?.(chunk.error.message || '上游返回错误')
             continue

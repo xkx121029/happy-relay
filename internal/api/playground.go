@@ -32,7 +32,7 @@ func (s *Server) handlePlaygroundChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请先选择要调试的模型")
 		return
 	}
-	s.runChat(w, r, panelKey, in)
+	s.runChat(w, r, panelKey, in, true)
 }
 
 func (s *Server) handlePlaygroundImage(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func (s *Server) handlePlaygroundImage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	s.runImage(w, r, panelKey, raw)
+	s.runImage(w, r, panelKey, raw, true)
 }
 
 func (s *Server) handlePlaygroundVideo(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +58,7 @@ func (s *Server) handlePlaygroundVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	s.runVideoCreate(w, r, panelKey, raw)
+	s.runVideoCreate(w, r, panelKey, raw, true)
 }
 
 // applySkill 把技能模板渲染成实际的 prompt / messages。

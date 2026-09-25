@@ -8,6 +8,8 @@ interface ChatMsg {
   role: string
   content: string
   reasoning?: string
+  /** 本次回复实际命中的上游渠道 */
+  provider?: string
 }
 
 const loading = ref(true)
@@ -24,6 +26,7 @@ const streamEl = ref<HTMLElement | null>(null)
 
 const generating = ref(false)
 const images = ref<string[]>([])
+const imageProvider = ref('')
 const videoTask = ref<VideoTask | null>(null)
 const videoBusy = ref(false)
 let videoTimer: number | null = null
@@ -60,6 +63,8 @@ const capModels = computed(() =>
 const capSkills = computed(() =>
   skills.value.filter((s) => s.enabled && s.capability === capability.value),
 )
+
+const selModelInfo = computed(() => capModels.value.find((m) => m.name === selModel.value))
 
 const currentSkill = computed<Skill | undefined>(() => skills.value.find((s) => s.slug === selSkill.value))
 
@@ -150,6 +155,10 @@ async function sendChat() {
         const m = msgs.value[idx]
         if (m) m.content += (m.content ? '\n\n' : '') + '⚠ ' + message
       },
+      onMeta: (meta) => {
+        const m = msgs.value[idx]
+        if (m && meta.provider) m.provider = meta.provider
+      },
       onDone: () => {
         streaming.value = false
         controller = null
@@ -190,6 +199,7 @@ async function genImage() {
     images.value = items
       .map((it: any) => it.url || (it.b64_json ? 'data:image/png;base64,' + it.b64_json : ''))
       .filter(Boolean)
+    imageProvider.value = res?.provider || ''
     if (!images.value.length) toast('未返回图片', 'error')
   } catch (e: any) {
     toast(e.message || '生成失败', 'error')
@@ -312,7 +322,10 @@ async function run() {
             <option v-for="m in capModels" :key="m.id" :value="m.name">{{ m.name }}</option>
           </select>
           <div v-if="capModels.length" class="hint">
-            {{ capModels.find((m) => m.name === selModel)?.provider_name }}
+            {{ selModelInfo?.provider_name || '—' }}
+            <span v-if="(selModelInfo?.provider_ids?.length || 0) > 1">
+              · 共 {{ selModelInfo?.provider_ids?.length }} 个渠道，失败时自动切换
+            </span>
           </div>
         </div>
 
@@ -403,6 +416,7 @@ async function run() {
                     v-if="streaming && i === msgs.length - 1 && m.role === 'assistant'"
                     class="typing"
                   />
+                  <div v-if="m.provider" class="msg-provider">上游渠道：{{ m.provider }}</div>
                 </div>
               </div>
             </div>
@@ -443,12 +457,17 @@ async function run() {
             </div>
           </div>
           <div v-if="generating" class="card row"><span class="spinner" /> <span class="muted">正在生成…</span></div>
-          <div v-else-if="images.length" class="media-grid">
-            <div v-for="(src, i) in images" :key="i" class="media-card">
-              <img :src="src" alt="生成结果" />
-              <div class="cap">
-                <span>结果 {{ i + 1 }}</span>
-                <a :href="src" target="_blank" rel="noreferrer">打开原图</a>
+          <div v-else-if="images.length">
+            <div v-if="imageProvider" class="row" style="margin-bottom: 10px">
+              <span class="badge brand">上游渠道：{{ imageProvider }}</span>
+            </div>
+            <div class="media-grid">
+              <div v-for="(src, i) in images" :key="i" class="media-card">
+                <img :src="src" alt="生成结果" />
+                <div class="cap">
+                  <span>结果 {{ i + 1 }}</span>
+                  <a :href="src" target="_blank" rel="noreferrer">打开原图</a>
+                </div>
               </div>
             </div>
           </div>
@@ -476,7 +495,10 @@ async function run() {
           <div v-if="videoTask" class="card">
             <div class="row" style="justify-content: space-between">
               <span class="mono dim">{{ videoTask.id }}</span>
-              <span class="badge" :class="taskBadge(videoTask.status)">{{ taskLabel(videoTask.status) }}</span>
+              <span class="row" style="gap: 6px">
+                <span v-if="videoTask.provider" class="badge brand">上游 {{ videoTask.provider }}</span>
+                <span class="badge" :class="taskBadge(videoTask.status)">{{ taskLabel(videoTask.status) }}</span>
+              </span>
             </div>
             <div class="progress" style="margin: 12px 0">
               <i :style="{ width: (videoTask.progress || 0) + '%' }" />

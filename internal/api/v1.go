@@ -88,7 +88,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, key store.AP
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+in.Model)
 		return
 	}
-	s.runChat(w, r, key, in)
+	s.runChat(w, r, key, in, false)
 }
 
 // handleLegacyCompletion 兼容老式 /v1/completions：把 prompt 包成一条 user 消息后走对话链路。
@@ -116,10 +116,11 @@ func (s *Server) handleLegacyCompletion(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
 		return
 	}
-	s.runChat(w, r, key, in)
+	s.runChat(w, r, key, in, false)
 }
 
-func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKey, in *relay.ChatInput) {
+// runChat 执行对话请求；withMeta 为 true 时（面板调试台）会额外回传命中的上游信息。
+func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKey, in *relay.ChatInput, withMeta bool) {
 	start := time.Now()
 	m, ps, err := s.eng.ResolveAll(in.Model)
 	if err != nil {
@@ -185,6 +186,9 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			sse.send(map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}})
+			if withMeta {
+				sse.send(relayMeta(m.Name, usedProvider))
+			}
 			sse.done()
 			s.logUsage(store.UsageLog{
 				Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
@@ -199,6 +203,9 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 				"choices": []any{},
 				"usage":   usageMap(out.Usage),
 			})
+		}
+		if withMeta {
+			sse.send(relayMeta(m.Name, usedProvider))
 		}
 		sse.done()
 		usage := relay.Usage{}
@@ -244,6 +251,9 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 	}
 	if out.Usage.TotalTokens > 0 {
 		resp["usage"] = usageMap(out.Usage)
+	}
+	if withMeta {
+		resp["provider"] = usedProvider.Name
 	}
 	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
@@ -313,11 +323,12 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	s.runImage(w, r, key, raw)
+	s.runImage(w, r, key, raw, false)
 }
 
 // runImage 执行图片生成；raw 已由调用方解析并完成技能渲染。
-func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any) {
+// withMeta 为 true 时（面板调试台）会在响应里带上命中的上游。
+func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any, withMeta bool) {
 	model, _ := raw["model"].(string)
 	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
@@ -391,6 +402,9 @@ func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIK
 	if out.Usage != nil {
 		resp["usage"] = usageMap(*out.Usage)
 	}
+	if withMeta {
+		resp["provider"] = usedProvider.Name
+	}
 	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
 		Capability: store.CapImage, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
@@ -411,11 +425,12 @@ func (s *Server) handleVideoCreate(w http.ResponseWriter, r *http.Request, key s
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	s.runVideoCreate(w, r, key, raw)
+	s.runVideoCreate(w, r, key, raw, false)
 }
 
 // runVideoCreate 提交视频任务；raw 已由调用方解析并完成技能渲染。
-func (s *Server) runVideoCreate(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any) {
+// withMeta 为 true 时（面板调试台）会在响应里带上命中的上游。
+func (s *Server) runVideoCreate(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any, withMeta bool) {
 	model, _ := raw["model"].(string)
 	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
@@ -454,9 +469,13 @@ func (s *Server) runVideoCreate(w http.ResponseWriter, r *http.Request, key stor
 		writeErr(w, http.StatusBadGateway, "upstream_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.taskResponse(task))
+	resp := s.taskResponse(task)
+	if withMeta {
+		resp["provider"] = providerNameByID(ps, task.ProviderID)
+	}
+	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
-		Capability: store.CapVideo, Model: m.Name, ProviderName: firstProvider(ps).Name,
+		Capability: store.CapVideo, Model: m.Name, ProviderName: providerNameByID(ps, task.ProviderID),
 		APIKeyName: key.Name, Status: 200, LatencyMS: time.Since(start).Milliseconds(),
 		RequestBody: previewOf(raw, 2000), ResponsePreview: "已提交视频任务 " + task.TaskID,
 	})
@@ -649,6 +668,26 @@ func firstProvider(ps []store.Provider) store.Provider {
 		return ps[0]
 	}
 	return store.Provider{}
+}
+
+// providerNameByID 找出本次实际命中的渠道名，找不到时回退到首个渠道。
+func providerNameByID(ps []store.Provider, id int64) string {
+	for _, p := range ps {
+		if p.ID == id {
+			return p.Name
+		}
+	}
+	return firstProvider(ps).Name
+}
+
+// relayMeta 是面板调试台专用的元信息分片，用于展示本次调用最终命中的上游。
+func relayMeta(model string, p store.Provider) map[string]any {
+	return map[string]any{
+		"object":   "relay.meta",
+		"model":    model,
+		"provider": p.Name,
+		"provider_id": p.ID,
+	}
 }
 
 func usageMap(u relay.Usage) map[string]any {

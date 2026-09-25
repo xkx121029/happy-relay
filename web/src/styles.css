@@ -942,6 +942,15 @@ pre.code-block {
   white-space: pre-wrap;
 }
 
+/* 调试台：本次回复命中的上游渠道 */
+.msg-provider {
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
 .typing {
   display: inline-block;
   width: 7px;
