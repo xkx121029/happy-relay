@@ -325,6 +325,38 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | --- | --- | --- |
 | GET | `/healthz` | 返回 `{"status":"ok"}`，不需要鉴权，供部署探活 |
 
+### 10. 自动模型 `auto`
+
+把 `model` 填成 `auto`，服务端会先评估任务难度，再挑选档位匹配的文本模型。
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+难度打分维度：
+
+| 维度 | 加分 |
+| --- | --- |
+| 输入长度 ≥ 100 / 400 / 1200 字 | +1 / +2 / +3 |
+| 含图片 | +2 |
+| 带 `tools`（函数调用） | +1 |
+| 系统提示 ≥ 500 字 | +1 |
+| 命中复杂关键词（重构、算法、证明、架构…） | +1，命中 3 个以上 +2 |
+
+| 总分 | 档位 |
+| --- | --- |
+| 0 | `light` 轻量 |
+| 1–2 | `standard` 标准 |
+| ≥ 3 | `pro` 强力 |
+
+模型档位在「模型」编辑里配置，留空时按上游模型名推断（`mini` / `flash` → 轻量，`pro` / `max` / `opus` → 强力）。
+目标档位没有可用模型时会向相邻档位降级，最终回退到任意一个可用的文本模型。
+
+面板调试台选中 `auto` 后，回复下方会显示实际选用的模型与打分理由。`GET /v1/models` 会把 `auto` 一并列出（带 `"auto": true`）。
+
 ### 流式输出说明
 
 - `/v1/chat/completions` 的 `stream=true` 与 `/v1/videos/{id}/stream` 都是 SSE。
@@ -454,6 +486,26 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 ---
 
+### 模型库 catalog
+
+模型库保存从渠道探测到（或手工登记）的上游模型，**仅作为配置候选，不直接对外开放**。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/catalog?provider_id=1&capability=chat` | 列出条目（含 `used_by` 引用计数） |
+| POST | `/api/catalog` | 手动登记（`provider_id` + `model_id` + `capability`） |
+| PUT | `/api/catalog/{id}` | 更新 |
+| DELETE | `/api/catalog/{id}` | 移除 |
+| POST | `/api/catalog/import` | 批量导入探测结果 |
+
+```json
+// POST /api/catalog/import
+{ "provider_id": 1, "models": [{ "model_id": "gpt-4o-mini", "capability": "chat" }] }
+// -> { "created": 1, "updated": 0 }
+```
+
+导入按「渠道 + 模型名」去重，重复导入只更新能力与时间；导入的条目默认可用。
+
 ### 模型 models
 
 一个模型 = 对外的模型名，可以指向一个或多个渠道下的真实上游模型名。
@@ -469,12 +521,17 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 {
   "provider_id": 1,
   "provider_ids": [1, 2],
+  "inputs": [
+    { "provider_id": 1, "upstream_name": "gpt-4o-mini" },
+    { "provider_id": 2, "upstream_name": "gpt-4o-mini" }
+  ],
   "name": "gpt-4o-mini",
   "upstream_name": "gpt-4o-mini",
   "capability": "chat",
   "config": {
     "system_prompt": "",
     "route_strategy": "failover",
+    "tier": "standard",
     "defaults": { "temperature": 0.7 }
   },
   "enabled": true
@@ -482,7 +539,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 ```
 
 - `name` 是客户端填的模型名，`upstream_name` 是发给上游的真实名字。两者解耦，因此同一个上游模型可以暴露成多个不同默认参数的对外模型。
-- `provider_ids` 是绑定的渠道列表（有序，首个为默认），`provider_id` 冗余保存首个以兼容旧数据；只传 `provider_id` 时等价于单渠道。
+- `inputs` 是上游列表（渠道 + 该渠道下的上游模型名），按顺序尝试、失败自动切换；`provider_ids` / `provider_id` 由它推导，兼容旧数据。
+- `config.tier` 是模型档位（`light` / `standard` / `pro`），供 `auto` 自动模型挑选，留空按上游模型名推断。
 - `capability`：`chat` 文本 / `image` 图片 / `video` 视频 / `embedding` 向量。
 - `defaults` 里的键值会合并进上游请求体，可用来固定温度、`max_tokens`、`top_p` 等；客户端显式传入的同名参数优先。
 - `route_strategy`：绑定多个渠道时的调度方式，`failover`（默认，按 `provider_ids` 顺序逐个尝试）/ `round_robin` / `random`。每次调用先按该策略排列渠道，再在渠道内按渠道自身的策略排列「入口 × 密钥」；全部失败才返回错误，流式响应一旦开始下发就不再切换。
