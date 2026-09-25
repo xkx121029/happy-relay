@@ -39,10 +39,19 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w" -o /out/relay ./cmd/relay
 
 # ---------- 阶段三：运行 ----------
+# ca-certificates 与 tzdata 都只是与架构无关的数据文件：
+# 先在构建平台上装好，再拷进目标架构的镜像里，
+# 这样最终阶段完全不需要在 QEMU 模拟下跑 apk（既慢又依赖 alpine 源的速度）。
+FROM --platform=$BUILDPLATFORM alpine:3.21 AS runtime-assets
+RUN apk add --no-cache ca-certificates tzdata
+
 FROM alpine:3.21
-# ca-certificates 用于访问 https 上游，tzdata 用于日志时间正确显示
-RUN apk add --no-cache ca-certificates tzdata && \
-    adduser -D -u 10001 relay
+COPY --from=runtime-assets /etc/ssl/certs/ /etc/ssl/certs/
+COPY --from=runtime-assets /etc/ca-certificates.conf /etc/ca-certificates.conf
+COPY --from=runtime-assets /usr/share/ca-certificates/ /usr/share/ca-certificates/
+COPY --from=runtime-assets /usr/share/zoneinfo/ /usr/share/zoneinfo/
+
+RUN adduser -D -u 10001 relay
 
 COPY --from=build /out/relay /usr/local/bin/relay
 
