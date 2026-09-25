@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 	created := time.Now().Unix()
 	data := []map[string]any{}
 	for _, m := range models {
-		if !m.Enabled || !key.allowed(m.Name) {
+		if !m.Enabled || !keyAllowed(key, m.Name) {
 			continue
 		}
 		data = append(data, map[string]any{
@@ -50,7 +50,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, key store.AP
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "缺少必填字段 model")
 		return
 	}
-	if !key.allowed(in.Model) {
+	if !keyAllowed(key, in.Model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+in.Model)
 		return
 	}
@@ -74,7 +74,7 @@ func (s *Server) handleLegacyCompletion(w http.ResponseWriter, r *http.Request, 
 	delete(raw, "prompt")
 	in := relay.ParseChatInput(raw)
 	in.Model = model
-	if !key.allowed(model) {
+	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
 		return
 	}
@@ -223,7 +223,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request, key st
 		return
 	}
 	model, _ := raw["model"].(string)
-	if !key.allowed(model) {
+	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
 		return
 	}
@@ -270,7 +270,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 		return
 	}
 	model, _ := raw["model"].(string)
-	if !key.allowed(model) {
+	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
 		return
 	}
@@ -359,7 +359,7 @@ func (s *Server) handleVideoCreate(w http.ResponseWriter, r *http.Request, key s
 		return
 	}
 	model, _ := raw["model"].(string)
-	if !key.allowed(model) {
+	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
 		return
 	}
@@ -413,7 +413,7 @@ func (s *Server) handleVideoGet(w http.ResponseWriter, r *http.Request, key stor
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "视频任务不存在："+id)
 		return
 	}
-	if !key.allowed(task.Model) {
+	if !keyAllowed(key, task.Model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权查询此任务")
 		return
 	}

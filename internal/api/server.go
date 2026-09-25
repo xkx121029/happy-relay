@@ -156,8 +156,8 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimSpace(h)
 }
 
-// allowed 判断秘钥是否被允许调用该模型。
-func (k store.APIKey) allowed(model string) bool {
+// keyAllowed 判断秘钥是否被允许调用该模型。
+func keyAllowed(k store.APIKey, model string) bool {
 	if len(k.Models) == 0 {
 		return true
 	}
