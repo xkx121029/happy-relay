@@ -1,1 +1,0 @@
-{"name":"probeMock","kind":"openai","base_urls":["http://127.0.0.1:9002/v1"],"api_keys":["sk-x"],"enabled":true}
