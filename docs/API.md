@@ -411,6 +411,26 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 面板调试台选中 `auto` 后，回复下方会显示实际选用的模型与打分理由。`GET /v1/models` 会把 `auto` 一并列出（带 `"auto": true`）。
 
+挑选时还会检查上下文容量：同一档位内优先选择窗口装得下本次请求的模型；若都装不下，则退回窗口最大的那个，并在理由里说明。
+
+### 上下文长度与容量规划
+
+**自动获取**：探测渠道时，服务端会从上游 `/v1/models` 的返回里读取上下文窗口并写入模型库，识别 `context_length`、`context_window`、`max_input_tokens`、`inputTokenLimit`、`max_tokens` 等字段，以及 `top_provider` / `model_info` 这类嵌套结构。模型库页面可以直接看到并手工修正。
+
+**生效顺序**：模型编辑里的「上下文窗口」→ 模型库探测值 → 按上游模型名推断（已覆盖 Gemini、Claude、GPT、Qwen、DeepSeek、Llama 等常见系列）。
+
+**调用前校验**：`/v1/chat/completions` 会先估算输入 token（CJK 按 1 字 1 token、其余按 4 字符 1 token，图片、工具调用与工具定义同样计入），再与窗口对比。处理方式由「设置 → 上下文超限策略」决定：
+
+| 策略 | 行为 |
+| --- | --- |
+| `reject`（默认） | 超出时直接返回 `400 context_length_exceeded`，错误信息写明估算用量与可用预算 |
+| `truncate` | 自动从最早的历史消息开始裁剪（保留系统提示与最近对话，并连带清理孤立的工具结果），裁剪条数会记入日志预览 |
+| `off` | 不做校验，完全交给上游判断 |
+
+可用输入预算为「窗口 × 安全系数」（默认 90%），其余留给输出与估算误差，安全系数可在设置里调整。窗口未知（探测不到且无法推断）时不作拦截，仅记录估算结果。
+
+`GET /v1/models` 在已知时会附带 `context_length`，便于客户端自行规划请求长度。
+
 ### 流式输出说明
 
 - `/v1/chat/completions` 的 `stream=true` 与 `/v1/videos/{id}/stream` 都是 SSE。
