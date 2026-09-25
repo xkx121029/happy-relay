@@ -44,10 +44,18 @@ export interface ModelConfig {
   defaults?: Record<string, any>
   /** 绑定多个渠道时的调度方式：failover（默认）| round_robin | random */
   route_strategy?: string
+  /** 模型档位，供 auto 自动按任务难度挑选：light | standard | pro */
+  tier?: string
   chat?: TemplateSpec | null
   image?: TemplateSpec | null
   video?: TemplateSpec | null
   video_query?: TemplateSpec | null
+}
+
+/** 一个上游输入：某渠道下的某个具体上游模型 */
+export interface ModelInput {
+  provider_id: number
+  upstream_name: string
 }
 
 export interface Model {
@@ -55,6 +63,8 @@ export interface Model {
   provider_id: number
   /** 绑定的渠道列表（有序，首个为默认），失败时按策略自动切换 */
   provider_ids: number[]
+  /** 上游输入列表：每个输入是一个「渠道 + 上游模型」组合 */
+  inputs: ModelInput[]
   provider_name?: string
   provider_kind?: string
   name: string
@@ -65,6 +75,23 @@ export interface Model {
   remark: string
   created_at: string
   updated_at: string
+}
+
+/** 模型库条目：渠道探测到或手工登记的上游模型，仅作配置候选，不直接对外 */
+export interface CatalogModel {
+  id: number
+  provider_id: number
+  provider_name?: string
+  provider_kind?: string
+  model_id: string
+  capability: string
+  source: string
+  enabled: boolean
+  remark: string
+  created_at: string
+  updated_at: string
+  /** 被多少个对外模型引用 */
+  used_by?: number
 }
 
 export interface APIKey {
@@ -267,6 +294,19 @@ export const api = {
   saveModel: (m: Partial<Model>) =>
     m.id ? put<Model>(`/api/models/${m.id}`, m) : post<Model>('/api/models', m),
   deleteModel: (id: number) => del<{ ok: boolean }>(`/api/models/${id}`),
+
+  // 模型库
+  listCatalog: (params: { provider_id?: number; capability?: string } = {}) => {
+    const q = new URLSearchParams()
+    if (params.provider_id) q.set('provider_id', String(params.provider_id))
+    if (params.capability) q.set('capability', params.capability)
+    return request<CatalogModel[]>(`/api/catalog?${q.toString()}`)
+  },
+  saveCatalog: (m: Partial<CatalogModel>) =>
+    m.id ? put<CatalogModel>(`/api/catalog/${m.id}`, m) : post<CatalogModel>('/api/catalog', m),
+  deleteCatalog: (id: number) => del<{ ok: boolean }>(`/api/catalog/${id}`),
+  importCatalog: (body: { provider_id: number; models: Partial<CatalogModel>[] }) =>
+    post<{ created: number; updated: number }>('/api/catalog/import', body),
 
   // 秘钥
   listKeys: () => request<APIKey[]>('/api/keys'),
