@@ -38,22 +38,58 @@ type Provider struct {
 }
 
 func (s *Store) ListProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT p.id,p.name,p.kind,p.base_urls,p.api_keys,p.headers,p.strategy,
-		p.timeout_sec,p.enabled,p.remark,p.created_at,p.updated_at,
-		(SELECT COUNT(*) FROM models m WHERE m.provider_id=p.id) FROM providers p ORDER BY p.id DESC`)
+	rows, err := s.db.Query(`SELECT id,name,kind,base_urls,api_keys,headers,strategy,
+		timeout_sec,enabled,remark,created_at,updated_at,0 FROM providers ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Provider{}
 	for rows.Next() {
 		p, err := scanProvider(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.providerModelCounts()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].ModelCount = counts[out[i].ID]
+	}
+	return out, nil
+}
+
+// providerModelCounts 统计每个渠道被多少个模型引用（含多渠道绑定的模型）。
+func (s *Store) providerModelCounts() (map[int64]int, error) {
+	rows, err := s.db.Query(`SELECT provider_id,provider_ids FROM models`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[int64]int{}
+	for rows.Next() {
+		var primary int64
+		var raw string
+		if err := rows.Scan(&primary, &raw); err != nil {
+			return nil, err
+		}
+		ids := cleanIDs(unmarshal(raw, []int64{}))
+		if len(ids) == 0 && primary > 0 {
+			ids = []int64{primary}
+		}
+		for _, id := range ids {
+			counts[id]++
+		}
+	}
+	return counts, rows.Err()
 }
 
 func (s *Store) GetProvider(id int64) (Provider, error) {
@@ -470,6 +506,19 @@ func cleanList(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// cleanIDs 去重并剔除非正数，保持原有顺序。
+func cleanIDs(in []int64) []int64 {
+	out := make([]int64, 0, len(in))
+	seen := map[int64]bool{}
+	for _, v := range in {
+		if v > 0 && !seen[v] {
+			seen[v] = true
 			out = append(out, v)
 		}
 	}

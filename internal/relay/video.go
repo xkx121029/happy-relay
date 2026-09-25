@@ -45,44 +45,46 @@ func NewTaskID() string {
 	return "task_" + hex.EncodeToString(buf)
 }
 
-// CreateVideo 提交一次视频生成任务到上游，返回本地任务记录。
-func (e *Engine) CreateVideo(ctx context.Context, m store.Model, p store.Provider, in *VideoInput) (store.VideoTask, error) {
+// CreateVideo 提交一次视频生成任务到上游：先跨渠道尝试，再在渠道内切换入口/密钥。
+func (e *Engine) CreateVideo(ctx context.Context, m store.Model, ps []store.Provider, in *VideoInput) (store.VideoTask, error) {
 	if m.Config.Video == nil {
 		return store.VideoTask{}, errors.New("该视频模型未配置提交任务模板，请在模型编辑里填写")
 	}
 	var lastErr error
-	for _, up := range e.candidates(p) {
-		vars := videoVars(up, m, in, "")
-		raw, err := callTemplate(ctx, up, m.Config.Video, vars)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		spec := m.Config.Video
-		upstreamID := jsonPathString(raw, spec.Response.TaskID)
-		status := normalizeVideoStatus(jsonPathString(raw, spec.Response.Status), spec.Response)
-		task := store.VideoTask{
-			TaskID:         NewTaskID(),
-			Model:          m.Name,
-			ProviderID:     p.ID,
-			UpstreamTaskID: upstreamID,
-			UpstreamURL:    up.BaseURL,
-			Status:         status,
-			Request:        mustJSON(map[string]any{"prompt": in.Prompt, "image_url": in.ImageURL}),
-			Result:         mustJSON(map[string]any{"raw": raw}),
-		}
-		if errMsg := jsonPathString(raw, spec.Response.Error); errMsg != "" && spec.Response.Error != "" {
-			task.Status = store.TaskFailed
-			task.Error = errMsg
-		}
-		// 少数上游同步返回结果，此时直接落最终态。
-		if task.Status == store.TaskQueued && upstreamID == "" {
-			if u := jsonPathString(raw, spec.Response.VideoURL); u != "" {
-				task.Status = store.TaskSucceeded
+	for _, p := range e.orderProviders(m, ps) {
+		for _, up := range e.candidates(p) {
+			vars := videoVars(up, m, in, "")
+			raw, err := callTemplate(ctx, up, m.Config.Video, vars)
+			if err != nil {
+				lastErr = err
+				continue
 			}
+			spec := m.Config.Video
+			upstreamID := jsonPathString(raw, spec.Response.TaskID)
+			status := normalizeVideoStatus(jsonPathString(raw, spec.Response.Status), spec.Response)
+			task := store.VideoTask{
+				TaskID:         NewTaskID(),
+				Model:          m.Name,
+				ProviderID:     p.ID,
+				UpstreamTaskID: upstreamID,
+				UpstreamURL:    up.BaseURL,
+				Status:         status,
+				Request:        mustJSON(map[string]any{"prompt": in.Prompt, "image_url": in.ImageURL}),
+				Result:         mustJSON(map[string]any{"raw": raw}),
+			}
+			if errMsg := jsonPathString(raw, spec.Response.Error); errMsg != "" && spec.Response.Error != "" {
+				task.Status = store.TaskFailed
+				task.Error = errMsg
+			}
+			// 少数上游同步返回结果，此时直接落最终态。
+			if task.Status == store.TaskQueued && upstreamID == "" {
+				if u := jsonPathString(raw, spec.Response.VideoURL); u != "" {
+					task.Status = store.TaskSucceeded
+				}
+			}
+			task.Result = mustJSON(buildVideoResult(raw, spec))
+			return e.st.CreateVideoTask(task)
 		}
-		task.Result = mustJSON(buildVideoResult(raw, spec))
-		return e.st.CreateVideoTask(task)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("渠道未配置任何入口地址")
@@ -96,9 +98,13 @@ func (e *Engine) PollVideo(ctx context.Context, t store.VideoTask) (store.VideoT
 	if err != nil {
 		return t, err
 	}
-	p, err := e.st.GetProvider(m.ProviderID)
+	// 优先沿用提交任务时命中的渠道，保证查询打到同一上游。
+	p, err := e.st.GetProvider(t.ProviderID)
 	if err != nil {
-		return t, err
+		p, err = e.st.GetProvider(m.ProviderID)
+		if err != nil {
+			return t, err
+		}
 	}
 	spec := m.Config.VideoQuery
 	if spec == nil {
