@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"happy-relay/internal/store"
@@ -102,8 +103,11 @@ func AssessDifficulty(in *ChatInput) Difficulty {
 }
 
 // PickAuto 按请求难度挑选一个对外文本模型，并返回它绑定的渠道。
+// 除了难度档位，还会优先挑选上下文窗口装得下本次请求的模型；
+// 若同档位内都装不下，则退回到窗口最大的那个，交由后续上下文策略处理。
 func (e *Engine) PickAuto(in *ChatInput) (store.Model, []store.Provider, Difficulty, error) {
 	d := AssessDifficulty(in)
+	need := EstimateChatTokens(in)
 
 	all, err := e.st.ListModels()
 	if err != nil {
@@ -120,16 +124,33 @@ func (e *Engine) PickAuto(in *ChatInput) (store.Model, []store.Provider, Difficu
 		return store.Model{}, nil, d, errors.New("还没有可用的文本模型，无法使用 auto")
 	}
 
-	// 先找目标档位，再向相邻档位降级。
+	// 先找目标档位，再向相邻档位降级；同档位内优先挑容量足够的模型。
+	var fallback store.Model
+	var fallbackPS []store.Provider
+	fallbackLimit := 0
 	for _, tier := range tierFallback(d.Tier) {
 		for _, m := range candidates {
 			if m.EffectiveTier() != tier {
 				continue
 			}
-			if ps, err := e.providersFor(m); err == nil {
+			ps, err := e.providersFor(m)
+			if err != nil {
+				continue
+			}
+			limit := m.EffectiveContextLength()
+			// 窗口未知（0）时不否决候选，保持原有的难度择优行为。
+			if limit <= 0 || limit >= need {
 				return m, ps, d, nil
 			}
+			if limit > fallbackLimit {
+				fallback, fallbackPS, fallbackLimit = m, ps, limit
+			}
 		}
+	}
+	if fallbackLimit > 0 {
+		d.Reason = fmt.Sprintf("%s；候选模型上下文均不足（约需 %d tokens），已选用窗口最大的 %s",
+			d.Reason, need, fallback.Name)
+		return fallback, fallbackPS, d, nil
 	}
 	// 兜底：退回到第一个可用模型。
 	for _, m := range candidates {
