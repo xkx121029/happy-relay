@@ -365,12 +365,25 @@ GET /v1/videos/{id}
       "ok": true,
       "status": 200,
       "latency_ms": 240,
-      "detail": "连通正常，发现 1 个可用模型",
-      "models": ["gpt-4o-mini"]
+      "detail": "连通正常，发现 3 个可用模型",
+      "models": [
+        { "id": "dall-e-3", "capability": "image", "hint": "名称含图片关键词" },
+        { "id": "gpt-4o-mini", "capability": "chat", "hint": "未识别到特征，默认按对话处理" },
+        { "id": "text-embedding-3-small", "capability": "embedding", "hint": "名称含向量化关键词" }
+      ]
     }
   ]
 }
 ```
+
+`models` 是探测到的模型清单，每个条目含推断出的 `capability`（`chat` / `image` / `video` / `embedding`，空表示未识别）与推断依据 `hint`：
+
+- 优先采信上游声明的字段：`capability` / `type` / `model_type`，或 Gemini 的 `supportedGenerationMethods`
+- 其次按模型名特征判断：`embed` → 向量；`veo` / `kling` / `video` → 视频；`dall-e` / `flux` / `image` → 图片
+- 音频、审核、重排类模型（`whisper` / `tts` / `moderation` / `rerank`）标记为空能力，导入时默认不勾选
+- 其余默认按 `chat` 处理
+
+面板可在探测结果里直接勾选并批量导入为对外模型（同名模型会自动跳过）。
 
 ---
 
