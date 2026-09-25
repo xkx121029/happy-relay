@@ -95,6 +95,72 @@ func templateStringify(v any) string {
 	}
 }
 
+// resolveEndpoint 把模板路径解析成完整地址：
+// 路径本身以 http(s):// 开头时按绝对地址处理，否则拼到渠道入口地址之后。
+// 这样可以对接「创建与查询不在同一路径前缀下」的上游（例如 Agnes 视频的 /agnesapi）。
+func resolveEndpoint(baseURL, path string) string {
+	trimmed := strings.TrimSpace(path)
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return trimmed
+	}
+	return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(trimmed, "/")
+}
+
+// baseRoot 返回入口地址去掉版本后缀后的根地址（如 https://api.x.cn/v1 → https://api.x.cn）。
+// 模板里用 {{base_root}} 拼接与业务接口不同前缀的辅助端点。
+func baseRoot(baseURL string) string {
+	root := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	for _, suffix := range []string{"/v1", "/v2", "/v3"} {
+		if strings.HasSuffix(root, suffix) {
+			return strings.TrimSuffix(root, suffix)
+		}
+	}
+	return root
+}
+
+// omitEmptyValues 递归剔除值为空串、空数组或 null 的字段，
+// 用于「同一字段传空会被判为参数错误」的上游。
+func omitEmptyValues(node any) any {
+	switch t := node.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, v := range t {
+			if isEmptyValue(v) {
+				continue
+			}
+			out[k] = omitEmptyValues(v)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, v := range t {
+			if isEmptyValue(v) {
+				continue
+			}
+			out = append(out, omitEmptyValues(v))
+		}
+		return out
+	}
+	return node
+}
+
+// isEmptyValue 判断取值是否应当被视为「未提供」。
+func isEmptyValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []any:
+		return len(t) == 0
+	case []string:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	}
+	return false
+}
+
 // ---------- 变量 ----------
 
 // buildTemplateVars 汇总模板可用变量；chat 与 image 二者只传其一。
@@ -102,6 +168,7 @@ func buildTemplateVars(up Upstream, m store.Model, chat *ChatInput, image *Image
 	vars := map[string]any{
 		// {{model}} 与 {{upstream_model}} 均为上游模型名，保持与路径占位符语义一致。
 		"model":          m.UpstreamName,
+		"base_root":      baseRoot(up.BaseURL),
 		"upstream_model": m.UpstreamName,
 		"key":            up.APIKey,
 		"prompt":         "",
@@ -225,8 +292,7 @@ func (a *TemplateAdapter) doTemplateRequest(ctx context.Context, up Upstream, sp
 	if pathTpl == "" {
 		pathTpl = "/"
 	}
-	endpoint := strings.TrimRight(up.BaseURL, "/") + "/" +
-		strings.TrimLeft(templateReplaceStr(pathTpl, vars), "/")
+	endpoint := resolveEndpoint(up.BaseURL, templateReplaceStr(pathTpl, vars))
 	if q := templateQuery(spec.Query, vars); q != "" {
 		sep := "?"
 		if strings.Contains(endpoint, "?") {
@@ -242,6 +308,9 @@ func (a *TemplateAdapter) doTemplateRequest(ctx context.Context, up Upstream, sp
 	var body any
 	if method != "GET" && spec.Body != nil {
 		body = renderTemplate(spec.Body, vars)
+		if spec.OmitEmpty {
+			body = omitEmptyValues(body)
+		}
 	}
 	resp, err := doJSON(ctx, up, method, endpoint, headers, body)
 	if err != nil {

@@ -50,10 +50,14 @@ func doJSON(ctx context.Context, up Upstream, method, url string, headers map[st
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+		detail := upstreamErrorMessage(string(raw))
+		if detail == "" {
+			detail = truncate(string(raw), 400)
+		}
 		return nil, &UpstreamError{
 			StatusCode: resp.StatusCode,
 			Body:       string(raw),
-			Message:    fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, truncate(string(raw), 400)),
+			Message:    fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, detail),
 		}
 	}
 	return resp, nil
@@ -246,6 +250,46 @@ func jsonPathInt(root any, path string) int {
 		return n
 	}
 	return 0
+}
+
+// upstreamErrorMessage 从上游错误响应里提取可读信息，避免把整段 JSON 抛给用户。
+// 依次兼容：OpenAI 的 error.message、FastAPI 风格的 detail（字符串或校验数组），
+// 以及常见的 message / msg 字段；都取不到时返回空串，由调用方回退到原始报文。
+func upstreamErrorMessage(raw string) string {
+	var obj map[string]any
+	if json.Unmarshal([]byte(raw), &obj) != nil {
+		return ""
+	}
+	if e, ok := obj["error"].(map[string]any); ok {
+		if m := asString(e["message"]); m != "" {
+			return m
+		}
+	}
+	if m := asString(obj["error"]); m != "" {
+		return m
+	}
+	for _, key := range []string{"detail", "message", "msg", "error_message", "reason"} {
+		switch v := obj[key].(type) {
+		case string:
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		case []any:
+			// FastAPI 的校验错误形如 [{"loc":[...],"msg":"..."}]，拼成一句话。
+			msgs := make([]string, 0, len(v))
+			for _, item := range v {
+				if m, ok := item.(map[string]any); ok {
+					if s := asString(m["msg"]); s != "" {
+						msgs = append(msgs, s)
+					}
+				}
+			}
+			if len(msgs) > 0 {
+				return strings.Join(msgs, "；")
+			}
+		}
+	}
+	return ""
 }
 
 func min(a, b int) int {

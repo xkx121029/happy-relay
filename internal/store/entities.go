@@ -242,12 +242,17 @@ const (
 // TemplateSpec 描述如何把统一的 v1 请求翻译成一次上游 HTTP 调用。
 // 用于视频任务与自定义上游，占位符形如 {{prompt}}、{{model}}，取值路径支持 a.b[0].c。
 type TemplateSpec struct {
-	Method   string            `json:"method,omitempty"`  // POST / GET，默认 POST
-	Path     string            `json:"path,omitempty"`    // 相对 base_url 的路径
+	Method string `json:"method,omitempty"` // POST / GET，默认 POST
+	// Path 相对 base_url；若以 http(s):// 开头则视为绝对地址直接使用，
+	// 便于对接「创建在 /v1 下、查询在根路径」的上游（如 Agnes 的 /agnesapi）。
+	Path     string            `json:"path,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"` // 额外请求头
 	Body     map[string]any    `json:"body,omitempty"`    // 请求体模板
 	Query    map[string]string `json:"query,omitempty"`   // URL 查询参数模板
 	Response ResponseMap       `json:"response,omitempty"`
+	// OmitEmpty 为真时，渲染后剔除请求体中值为空串、空数组或 null 的字段。
+	// 用于「不同模式只允许传对应参数、传了空值会报错」的上游。
+	OmitEmpty bool `json:"omit_empty,omitempty"`
 }
 
 // ResponseMap 描述从上游响应 JSON 中取值的方式。
