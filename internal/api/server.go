@@ -47,9 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/videos/{id}", s.withKey(s.handleVideoGet))
 	mux.HandleFunc("DELETE /v1/videos/{id}", s.withKey(s.handleVideoDelete))
 	mux.HandleFunc("GET /v1/videos/{id}/stream", s.withKey(s.handleVideoStream))
-	// 兼容以 /generations 结尾的写法
+	// 兼容以 /generations 结尾的创建写法（查询统一走 /v1/videos/{id}）
 	mux.HandleFunc("POST /v1/videos/generations", s.withKey(s.handleVideoCreate))
-	mux.HandleFunc("GET /v1/videos/generations/{id}", s.withKey(s.handleVideoGet))
 
 	// ---------- 面板管理 ----------
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
