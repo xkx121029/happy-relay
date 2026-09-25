@@ -30,14 +30,16 @@ type Engine struct {
 	rr       map[int64]int // 渠道内轮询游标（按渠道 ID）
 	rrModel  map[int64]int // 跨渠道轮询游标（按模型 ID）
 	adapters map[string]Adapter
+	breaker  *breakerGuard // 渠道级熔断
 }
 
-func NewEngine(st *store.Store) *Engine {
+func NewEngine(st *store.Store, breakerFails, breakerCoolSec int) *Engine {
 	e := &Engine{
-		st:      st,
-		client:  &http.Client{},
-		rr:      map[int64]int{},
-		rrModel: map[int64]int{},
+		st:       st,
+		client:   &http.Client{},
+		rr:       map[int64]int{},
+		rrModel:  map[int64]int{},
+		breaker:  newBreakerGuard(breakerFails, breakerCoolSec),
 	}
 	e.adapters = map[string]Adapter{
 		store.KindOpenAI:    &OpenAIAdapter{},
@@ -223,21 +225,24 @@ func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, i
 	}
 	var lastErr error
 	var lastProvider store.Provider
-	for _, p := range e.orderProviders(m, ps) {
+	for _, p := range e.orderForTry(m, ps) {
 		lastProvider = p
 		a, err := e.adapterFor(p.Kind, store.CapChat)
 		if err != nil {
 			lastErr = err
+			e.breaker.report(p.ID, err)
 			continue
 		}
 		cands := e.candidates(p)
 		if len(cands) == 0 {
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			e.breaker.report(p.ID, lastErr)
 			continue
 		}
 		// 同一个对外模型在不同渠道上可以对应不同的上游模型名。
 		mu := m
 		mu.UpstreamName = m.UpstreamNameFor(p.ID)
+		var providerErr error
 		for _, up := range cands {
 			emitted := false
 			var wrapped StreamFunc
@@ -249,8 +254,10 @@ func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, i
 			}
 			out, err := a.Chat(withContext(ctx), up, mu, in, wrapped)
 			if err == nil {
+				e.breaker.report(p.ID, nil)
 				return out, up.Provider, nil
 			}
+			providerErr = err
 			lastErr = err
 			if emitted {
 				return nil, up.Provider, err
@@ -259,6 +266,7 @@ func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, i
 				return nil, up.Provider, err
 			}
 		}
+		e.breaker.report(p.ID, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("没有可用的上游渠道")
