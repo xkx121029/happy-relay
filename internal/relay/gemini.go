@@ -475,7 +475,7 @@ func parseGeminiChat(raw map[string]any, model string) (*ChatOutput, error) {
 
 func (a *GeminiAdapter) Image(ctx context.Context, up Upstream, m store.Model, in *ImageInput) (*ImageOutput, error) {
 	params := map[string]any{}
-	// Options 里的附加参数原样透传成 predication 参数，便于设置 outputOptions 等扩展项。
+	// Options 里的附加参数原样透传成 predict 参数，便于设置 outputOptions 等扩展项。
 	for k, v := range in.Options {
 		switch k {
 		case "parameters", "size", "n", "response_format", "prompt", "model":
