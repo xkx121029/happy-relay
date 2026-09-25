@@ -206,7 +206,15 @@ func (s *Store) ImportAll(b *Backup) (*ImportSummary, error) {
 		summary.Providers++
 	}
 
-	// 模型：把输入里的旧渠道 ID 换成新 ID。
+	// 模型：同名更新、否则新建；同时把输入里的旧渠道 ID 换成新 ID。
+	existingModels, err := s.ListModels()
+	if err != nil {
+		return nil, err
+	}
+	modelByName := map[string]int64{}
+	for _, m := range existingModels {
+		modelByName[m.Name] = m.ID
+	}
 	for _, m := range b.Models {
 		raw := m.Inputs
 		if len(raw) == 0 {
@@ -224,7 +232,7 @@ func (s *Store) ImportAll(b *Backup) (*ImportSummary, error) {
 			}
 			mapped = append(mapped, ModelInput{ProviderID: id, UpstreamName: in.UpstreamName})
 		}
-		m.ID = 0
+		m.ID = modelByName[m.Name]
 		m.ProviderIDs = nil
 		m.ProviderID = 0
 		m.Inputs = mapped
