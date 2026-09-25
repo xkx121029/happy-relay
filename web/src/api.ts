@@ -104,7 +104,42 @@ export interface APIKey {
   remark: string
   created_at: string
   last_used_at: string
+  /** 配额，0 表示不限制 */
+  rpm: number
+  daily_quota: number
+  daily_tokens: number
   calls?: number
+}
+
+/** 渠道健康状态（引擎熔断） */
+export interface ProviderHealth {
+  provider_id: number
+  open: boolean
+  fails: number
+  remain_sec: number
+  last_error?: string
+}
+
+export interface ModelStat {
+  model: string
+  calls: number
+  failed: number
+  tokens: number
+  avg_latency_ms: number
+}
+
+export interface ProviderStat {
+  provider: string
+  calls: number
+  failed: number
+  avg_latency_ms: number
+}
+
+export interface StatsReport {
+  days: number
+  by_model: ModelStat[]
+  by_provider: ProviderStat[]
+  by_day: { date: string; total: number; failed: number }[]
 }
 
 export interface SkillParam {
@@ -293,6 +328,16 @@ export const api = {
   deleteProvider: (id: number) => del<{ ok: boolean }>(`/api/providers/${id}`),
   testProvider: (payload: { id?: number; kind?: string; base_url?: string; api_key?: string }) =>
     post<{ results: ProbeResult[] }>('/api/providers/test', payload),
+
+  // 渠道健康（熔断状态）
+  providerHealth: () => request<ProviderHealth[]>('/api/providers/health'),
+  resetProviderHealth: (id: number) => post<{ ok: boolean }>(`/api/providers/${id}/reset`),
+  resetAllProviderHealth: () => post<{ ok: boolean }>('/api/providers/reset'),
+
+  // 用量报表与备份
+  getStats: (days = 7) => request<StatsReport>(`/api/stats?days=${days}`),
+  exportBackup: () => request<any>('/api/backup'),
+  importBackup: (payload: any) => post<Record<string, number>>('/api/backup', payload),
 
   // 模型
   listModels: () => request<Model[]>('/api/models'),

@@ -11,7 +11,17 @@ const editing = ref(false)
 const saving = ref(false)
 
 function blank() {
-  return { id: 0, name: '', models: [] as string[], enabled: true, expires_at: '', remark: '' }
+  return {
+    id: 0,
+    name: '',
+    models: [] as string[],
+    enabled: true,
+    expires_at: '',
+    remark: '',
+    rpm: 0,
+    daily_quota: 0,
+    daily_tokens: 0,
+  }
 }
 
 const form = reactive(blank())
@@ -46,6 +56,9 @@ function openEdit(k: APIKey) {
     enabled: k.enabled,
     expires_at: k.expires_at ? k.expires_at.slice(0, 10) : '',
     remark: k.remark,
+    rpm: k.rpm || 0,
+    daily_quota: k.daily_quota || 0,
+    daily_tokens: k.daily_tokens || 0,
   })
   editing.value = true
 }
@@ -70,6 +83,9 @@ async function save() {
       enabled: form.enabled,
       expires_at: form.expires_at,
       remark: form.remark.trim(),
+      rpm: Number(form.rpm) || 0,
+      daily_quota: Number(form.daily_quota) || 0,
+      daily_tokens: Number(form.daily_tokens) || 0,
     })
     toast('秘钥已保存')
     editing.value = false
@@ -215,6 +231,22 @@ function expired(k: APIKey) {
         <input v-model="form.expires_at" type="date" class="input" />
         <div class="hint">留空表示永不过期。</div>
       </div>
+
+      <div class="grid cols-3" style="gap: 0 14px">
+        <div class="field">
+          <label>每分钟请求上限</label>
+          <input v-model.number="form.rpm" type="number" min="0" class="input" placeholder="0 不限" />
+        </div>
+        <div class="field">
+          <label>每日请求上限</label>
+          <input v-model.number="form.daily_quota" type="number" min="0" class="input" placeholder="0 不限" />
+        </div>
+        <div class="field">
+          <label>每日 Token 上限</label>
+          <input v-model.number="form.daily_tokens" type="number" min="0" class="input" placeholder="0 不限" />
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom: 14px">配额填 0 表示不限制；超出后接口返回 429 并说明原因。</div>
 
       <div class="field">
         <label>备注</label>

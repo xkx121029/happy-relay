@@ -45,6 +45,47 @@ async function save() {
 }
 
 const baseURL = computed(() => `${location.origin}/v1`)
+
+const backupBusy = ref(false)
+
+// exportBackup 把全部配置下载成 JSON 文件。
+async function exportBackup() {
+  backupBusy.value = true
+  try {
+    const data = await api.exportBackup()
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `happy-relay-backup-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('配置已导出')
+  } catch (e: any) {
+    toast(e.message || '导出失败', 'error')
+  } finally {
+    backupBusy.value = false
+  }
+}
+
+// onImportFile 读取选中的备份文件并合并导入。
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const payload = JSON.parse(await file.text())
+    const summary = await api.importBackup(payload)
+    toast(
+      `导入完成：渠道 ${summary.providers ?? 0}、模型 ${summary.models ?? 0}、秘钥 ${summary.keys ?? 0}、技能 ${summary.skills ?? 0}`,
+    )
+    await load()
+  } catch (err: any) {
+    toast(err.message || '导入失败', 'error')
+  } finally {
+    input.value = ''
+  }
+}
 </script>
 
 <template>
@@ -89,6 +130,23 @@ const baseURL = computed(() => `${location.origin}/v1`)
         </div>
         <div class="hint" style="margin-top: 16px">
           对外接口包括 /v1/chat/completions、/v1/images/generations、/v1/embeddings 与任务式的 /v1/videos。
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">配置备份</h3>
+        <p class="muted" style="margin-top: 0">
+          导出全部渠道、模型、秘钥、技能、模型库与设置，便于迁移或留档。
+        </p>
+        <div class="row">
+          <button class="btn" :disabled="backupBusy" @click="exportBackup">导出配置</button>
+          <label class="btn" style="cursor: pointer">
+            导入配置
+            <input type="file" accept="application/json" style="display: none" @change="onImportFile" />
+          </label>
+        </div>
+        <div class="hint" style="margin-top: 12px">
+          导入为合并方式：同名的渠道 / 模型 / 秘钥 / 技能会被更新，不会删除现有数据。
         </div>
       </div>
     </div>

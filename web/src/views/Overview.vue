@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Overview } from '../api'
+import { api, type Overview, type StatsReport } from '../api'
 import { capLabel, fmtNumber, fmtTime, relative } from '../utils'
 import { toast } from '../store'
 
 const router = useRouter()
 const data = ref<Overview | null>(null)
+const report = ref<StatsReport | null>(null)
 const loading = ref(true)
 
 async function load() {
   loading.value = true
   try {
-    data.value = await api.getOverview()
+    const [overview, stats] = await Promise.all([api.getOverview(), api.getStats(14)])
+    data.value = overview
+    report.value = stats
   } catch (e: any) {
     toast(e.message || '概览加载失败', 'error')
   } finally {
@@ -134,6 +137,60 @@ function taskLabel(status: string) {
         <div v-else class="empty">
           <div class="big">暂无视频任务</div>
         </div>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-bottom: 16px">
+      <div class="card">
+        <h3 class="card-title">模型用量 · 近 14 天</h3>
+        <div v-if="report?.by_model?.length" class="table-wrap" style="border: none">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>调用</th>
+                <th>失败</th>
+                <th>Token</th>
+                <th>平均耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in report.by_model" :key="m.model">
+                <td class="mono clamp-1">{{ m.model }}</td>
+                <td class="dim">{{ m.calls }}</td>
+                <td :style="m.failed ? 'color: var(--danger)' : ''">{{ m.failed }}</td>
+                <td class="muted">{{ fmtNumber(m.tokens) }}</td>
+                <td class="muted nowrap">{{ Math.round(m.avg_latency_ms) }} ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty"><div class="big">暂无数据</div></div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">渠道用量 · 近 14 天</h3>
+        <div v-if="report?.by_provider?.length" class="table-wrap" style="border: none">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>渠道</th>
+                <th>调用</th>
+                <th>失败</th>
+                <th>平均耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in report.by_provider" :key="p.provider">
+                <td class="clamp-1">{{ p.provider }}</td>
+                <td class="dim">{{ p.calls }}</td>
+                <td :style="p.failed ? 'color: var(--danger)' : ''">{{ p.failed }}</td>
+                <td class="muted nowrap">{{ Math.round(p.avg_latency_ms) }} ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty"><div class="big">暂无数据</div></div>
       </div>
     </div>
 

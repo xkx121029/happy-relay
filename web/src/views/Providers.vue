@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
-import { api, type ProbeModel, type ProbeResult, type Provider } from '../api'
+import { api, type ProbeModel, type ProbeResult, type Provider, type ProviderHealth } from '../api'
 import { providers, state, toast } from '../store'
 import { capLabel, copyText, kindLabel, strategyLabel } from '../utils'
 
@@ -10,6 +10,7 @@ const editing = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const importing = ref(false)
+const health = ref<Record<number, ProviderHealth>>({})
 
 const probeOpen = ref(false)
 const probeTitle = ref('')
@@ -72,11 +73,26 @@ const allProbeModels = computed<ProbeModel[]>(() => {
 async function load() {
   loading.value = true
   try {
-    providers.value = await api.listProviders()
+    const [list, healthList] = await Promise.all([api.listProviders(), api.providerHealth()])
+    providers.value = list
+    const map: Record<number, ProviderHealth> = {}
+    for (const item of healthList) map[item.provider_id] = item
+    health.value = map
   } catch (e: any) {
     toast(e.message || '加载渠道失败', 'error')
   } finally {
     loading.value = false
+  }
+}
+
+// resetHealth 手动清除某个渠道的熔断状态。
+async function resetHealth(p: Provider) {
+  try {
+    await api.resetProviderHealth(p.id)
+    toast(`已恢复渠道「${p.name}」`)
+    await load()
+  } catch (e: any) {
+    toast(e.message || '操作失败', 'error')
   }
 }
 
@@ -309,6 +325,7 @@ function capBadge(capability: string) {
             <th>入口 / 密钥</th>
             <th>策略</th>
             <th>模型</th>
+            <th>健康</th>
             <th>状态</th>
             <th style="text-align: right">操作</th>
           </tr>
@@ -326,6 +343,15 @@ function capBadge(capability: string) {
             <td class="dim">{{ strategyLabel(p.strategy) }}</td>
             <td class="dim">{{ p.model_count ?? 0 }}</td>
             <td>
+              <span v-if="health[p.id]?.open" class="badge danger" :title="health[p.id]?.last_error">
+                熔断 {{ health[p.id]?.remain_sec }}s
+              </span>
+              <span v-else-if="(health[p.id]?.fails ?? 0) > 0" class="badge warn">
+                失败 {{ health[p.id]?.fails }}
+              </span>
+              <span v-else class="badge ok"><span class="dot" />正常</span>
+            </td>
+            <td>
               <span class="badge" :class="p.enabled ? 'ok' : ''">
                 <span class="dot" />{{ p.enabled ? '启用' : '停用' }}
               </span>
@@ -333,6 +359,9 @@ function capBadge(capability: string) {
             <td>
               <div class="row" style="justify-content: flex-end; gap: 6px">
                 <button class="btn btn-sm btn-ghost" @click="testSaved(p)">获取模型</button>
+                <button v-if="health[p.id]?.open" class="btn btn-sm btn-ghost" @click="resetHealth(p)">
+                  恢复
+                </button>
                 <button class="btn btn-sm btn-ghost" @click="openEdit(p)">编辑</button>
                 <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="remove(p)">
                   删除
