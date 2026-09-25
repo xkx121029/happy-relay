@@ -1,1 +1,0 @@
-{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"OK","role":"assistant"}}],"created":1790345099,"id":"chatcmpl-mock","model":"mock-mini","object":"chat.completion","usage":{"completion_tokens":1,"prompt_tokens":1,"total_tokens":2}}
