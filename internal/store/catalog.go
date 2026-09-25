@@ -24,12 +24,14 @@ type CatalogModel struct {
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 
+	// ContextLength 是该上游模型的上下文窗口（token），探测不到时为 0。
+	ContextLength int `json:"context_length,omitempty"`
 	// UsedBy 表示有多少个对外模型引用了它。
 	UsedBy int `json:"used_by,omitempty"`
 }
 
 const catalogSelect = `SELECT c.id,c.provider_id,COALESCE(p.name,''),COALESCE(p.kind,''),c.model_id,
-	c.capability,c.source,c.enabled,c.remark,c.created_at,c.updated_at FROM catalog_models c
+	c.capability,c.source,c.enabled,c.remark,c.created_at,c.updated_at,c.context_length FROM catalog_models c
 	LEFT JOIN providers p ON p.id=c.provider_id`
 
 // ListCatalogModels 列出模型库条目，可按渠道与能力过滤。
@@ -95,7 +97,8 @@ func scanCatalog(sc scanner) (CatalogModel, error) {
 	var m CatalogModel
 	var enabled int
 	if err := sc.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderKind, &m.ModelID,
-		&m.Capability, &m.Source, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		&m.Capability, &m.Source, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt,
+		&m.ContextLength); err != nil {
 		return CatalogModel{}, err
 	}
 	m.Enabled = enabled == 1
@@ -122,22 +125,62 @@ func (s *Store) SaveCatalogModel(m CatalogModel) (CatalogModel, error) {
 	ts := now()
 	if m.ID == 0 {
 		if _, err := s.db.Exec(`INSERT INTO catalog_models
-			(provider_id,model_id,capability,source,enabled,remark,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?)
+			(provider_id,model_id,capability,source,enabled,remark,context_length,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(provider_id,model_id) DO UPDATE SET
 			  capability=excluded.capability, enabled=excluded.enabled,
-			  remark=excluded.remark, updated_at=excluded.updated_at`,
-			m.ProviderID, m.ModelID, m.Capability, m.Source, boolInt(m.Enabled), m.Remark, ts, ts); err != nil {
+			  remark=excluded.remark, updated_at=excluded.updated_at,
+			  -- 探测不到上下文时保留原有值，避免把已知信息覆盖成未知
+			  context_length=CASE WHEN excluded.context_length>0
+			    THEN excluded.context_length ELSE context_length END`,
+			m.ProviderID, m.ModelID, m.Capability, m.Source, boolInt(m.Enabled), m.Remark,
+			m.ContextLength, ts, ts); err != nil {
 			return m, err
 		}
 		return s.getCatalogByKey(m.ProviderID, m.ModelID)
 	}
 	if _, err := s.db.Exec(`UPDATE catalog_models SET provider_id=?,model_id=?,capability=?,
-		enabled=?,remark=?,updated_at=? WHERE id=?`,
-		m.ProviderID, m.ModelID, m.Capability, boolInt(m.Enabled), m.Remark, ts, m.ID); err != nil {
+		enabled=?,remark=?,context_length=?,updated_at=? WHERE id=?`,
+		m.ProviderID, m.ModelID, m.Capability, boolInt(m.Enabled), m.Remark,
+		m.ContextLength, ts, m.ID); err != nil {
 		return m, err
 	}
 	return s.GetCatalogModel(m.ID)
+}
+
+// catalogContextIndex 构建 (渠道, 上游模型名) → 上下文长度 的索引，
+// 用于一次性补全模型列表，避免逐条查询。
+func (s *Store) catalogContextIndex() map[string]int {
+	rows, err := s.db.Query(`SELECT provider_id,model_id,context_length FROM catalog_models WHERE context_length>0`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var providerID int64
+		var modelID string
+		var n int
+		if rows.Scan(&providerID, &modelID, &n) != nil {
+			continue
+		}
+		out[catalogKey(providerID, modelID)] = n
+	}
+	return out
+}
+
+// fillCatalogContext 用模型库里探测到的上下文长度补全模型。
+// 模型自己声明了上下文时以声明值为准，这里不覆盖。
+func fillCatalogContext(m *Model, index map[string]int) {
+	if m == nil || m.Config.ContextLength > 0 || len(index) == 0 {
+		return
+	}
+	for _, in := range m.AllInputs() {
+		if n := index[catalogKey(in.ProviderID, in.UpstreamName)]; n > 0 {
+			m.CatalogContextLength = n
+			return
+		}
+	}
 }
 
 func (s *Store) DeleteCatalogModel(id int64) error {

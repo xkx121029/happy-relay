@@ -143,15 +143,16 @@ CREATE INDEX IF NOT EXISTS idx_video_tasks_created ON video_tasks(created_at DES
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 
 CREATE TABLE IF NOT EXISTS catalog_models (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-  model_id    TEXT    NOT NULL,
-  capability  TEXT    NOT NULL DEFAULT 'chat',
-  source      TEXT    NOT NULL DEFAULT 'probe',
-  enabled     INTEGER NOT NULL DEFAULT 1,
-  remark      TEXT    NOT NULL DEFAULT '',
-  created_at  TEXT    NOT NULL,
-  updated_at  TEXT    NOT NULL
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id    INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id       TEXT    NOT NULL,
+  capability     TEXT    NOT NULL DEFAULT 'chat',
+  source         TEXT    NOT NULL DEFAULT 'probe',
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  context_length INTEGER NOT NULL DEFAULT 0,
+  remark         TEXT    NOT NULL DEFAULT '',
+  created_at     TEXT    NOT NULL,
+  updated_at     TEXT    NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_provider_model ON catalog_models(provider_id, model_id);
@@ -172,6 +173,10 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.addColumnIfMissing("models", "inputs", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	// catalog_models 表补充上下文长度列（探测上游模型列表时自动记录）。
+	if err := s.addColumnIfMissing("catalog_models", "context_length", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	// api_keys 表补充配额列。

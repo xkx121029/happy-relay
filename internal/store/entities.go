@@ -286,6 +286,9 @@ type ModelConfig struct {
 	// standard（默认，OpenAI 标准：response_format 与参考图放顶层）
 	// extra_body（Agnes Image 2.1 Flash 等要求把 response_format / image 放进 extra_body）
 	ImageMode string `json:"image_mode,omitempty"`
+	// ContextLength 是模型的上下文窗口（token）。留空（0）时回退到模型库探测值，
+	// 仍取不到则按上游模型名启发式推断；用于调用前的容量校验与 auto 路由。
+	ContextLength int `json:"context_length,omitempty"`
 	// 以下仅在渠道类型为 template，或能力为 video 时生效
 	Chat       *TemplateSpec `json:"chat,omitempty"`
 	Image      *TemplateSpec `json:"image,omitempty"`
@@ -330,10 +333,12 @@ type Model struct {
 	UpstreamName string       `json:"upstream_name"`
 	Capability   string       `json:"capability"`
 	Config       ModelConfig  `json:"config"`
-	Enabled      bool         `json:"enabled"`
-	Remark       string       `json:"remark"`
-	CreatedAt    string       `json:"created_at"`
-	UpdatedAt    string       `json:"updated_at"`
+	// CatalogContextLength 是模型库里探测到的上游上下文长度，只读，作为生效值的回退。
+	CatalogContextLength int    `json:"catalog_context_length,omitempty"`
+	Enabled              bool   `json:"enabled"`
+	Remark               string `json:"remark"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // AllInputs 返回模型配置的全部上游输入（有序去重）。
@@ -404,6 +409,50 @@ func GuessTier(name string) string {
 	return TierStandard
 }
 
+// EffectiveContextLength 返回模型可用的上下文窗口（token），0 表示未知。
+// 优先级：模型显式配置 > 模型库探测值 > 按上游模型名启发式推断。
+func (m Model) EffectiveContextLength() int {
+	if m.Config.ContextLength > 0 {
+		return m.Config.ContextLength
+	}
+	if m.CatalogContextLength > 0 {
+		return m.CatalogContextLength
+	}
+	return GuessContextLength(m.UpstreamName)
+}
+
+// contextLengthRules 按模型名特征给出常见上下文窗口，作为探测不到时的兜底。
+// 取值刻意偏保守：宁可提前提示用户，也不要让上游返回难以理解的报错。
+var contextLengthRules = []struct {
+	keywords []string
+	length   int
+}{
+	{[]string{"gemini-2", "gemini-1.5", "gemini-exp"}, 1048576},
+	{[]string{"claude", "o1-", "o3-", "o4-"}, 200000},
+	{[]string{"gpt-4.1", "gpt-4o", "gpt-4-turbo", "chatgpt-4o"}, 128000},
+	{[]string{"qwen3", "qwen2.5", "qwen2", "qwen-max", "yi-"}, 131072},
+	{[]string{"glm-4", "kimi", "moonshot", "command-r", "llama-3", "llama3"}, 131072},
+	{[]string{"deepseek", "mistral", "mixtral"}, 65536},
+	{[]string{"gpt-3.5"}, 16385},
+	{[]string{"gpt-4"}, 8192},
+}
+
+// GuessContextLength 按模型名推断上下文窗口，识别不出时返回 0（未知）。
+func GuessContextLength(name string) int {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return 0
+	}
+	for _, rule := range contextLengthRules {
+		for _, kw := range rule.keywords {
+			if strings.Contains(n, kw) {
+				return rule.length
+			}
+		}
+	}
+	return 0
+}
+
 const modelSelect = `SELECT m.id,m.provider_id,COALESCE(p.name,''),COALESCE(p.kind,''),m.name,
 	m.upstream_name,m.capability,m.config,m.enabled,m.remark,m.created_at,m.updated_at,m.provider_ids,m.inputs
 	FROM models m LEFT JOIN providers p ON p.id=m.provider_id`
@@ -413,16 +462,27 @@ func (s *Store) ListModels() ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Model{}
 	for rows.Next() {
 		m, err := scanModel(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	// 连接池限定为单连接，必须先关闭游标再发起下一次查询。
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	// 用模型库里探测到的上下文长度补全未显式声明的模型。
+	index := s.catalogContextIndex()
+	for i := range out {
+		fillCatalogContext(&out[i], index)
+	}
+	return out, nil
 }
 
 func (s *Store) GetModel(id int64) (Model, error) {
@@ -430,7 +490,11 @@ func (s *Store) GetModel(id int64) (Model, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Model{}, ErrNotFound
 	}
-	return m, err
+	if err != nil {
+		return Model{}, err
+	}
+	fillCatalogContext(&m, s.catalogContextIndex())
+	return m, nil
 }
 
 // ResolveModel 按对外模型名解析出可用模型（含渠道信息）。
@@ -439,7 +503,11 @@ func (s *Store) ResolveModel(name string) (Model, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Model{}, ErrNotFound
 	}
-	return m, err
+	if err != nil {
+		return Model{}, err
+	}
+	fillCatalogContext(&m, s.catalogContextIndex())
+	return m, nil
 }
 
 func scanModel(sc scanner) (Model, error) {
