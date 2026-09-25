@@ -18,6 +18,9 @@ type Config struct {
 	TimeoutSec     int    // 单次上游请求兜底超时（秒）
 	VideoPollSec   int    // 视频任务后台轮询间隔（秒）
 	DisableLogBody bool   // 是否关闭请求/响应体落库（保护隐私）
+	StreamSmooth   bool   // 是否把流式输出平滑成匀速下发
+	StreamRate     int    // 平滑输出速率上限（字符/秒）
+	HeartbeatSec   int    // SSE 心跳间隔（秒），0 表示关闭
 }
 
 func Load() *Config {
@@ -31,6 +34,9 @@ func Load() *Config {
 		TimeoutSec:     getenvInt("RELAY_TIMEOUT", 600),
 		VideoPollSec:   getenvInt("RELAY_VIDEO_POLL", 10),
 		DisableLogBody: getenvBool("RELAY_DISABLE_LOG_BODY", false),
+		StreamSmooth:   getenvBool("RELAY_STREAM_SMOOTH", true),
+		StreamRate:     getenvInt("RELAY_STREAM_RATE", 120),
+		HeartbeatSec:   getenvIntZero("RELAY_SSE_HEARTBEAT", 15),
 	}
 	return cfg
 }
@@ -57,6 +63,19 @@ func getenvInt(key string, def int) int {
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+// getenvIntZero 与 getenvInt 类似，但允许显式配置为 0（用于关闭某项功能）。
+func getenvIntZero(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
 		return def
 	}
 	return n

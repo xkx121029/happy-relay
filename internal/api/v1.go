@@ -45,6 +45,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, key store.AP
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请求体不是合法 JSON："+err.Error())
 		return
 	}
+	if err := s.applySkill(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	in := relay.ParseChatInput(raw)
 	if in.Model == "" {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "缺少必填字段 model")
@@ -72,6 +76,10 @@ func (s *Server) handleLegacyCompletion(w http.ResponseWriter, r *http.Request, 
 	model, _ := raw["model"].(string)
 	raw["messages"] = []any{map[string]any{"role": "user", "content": prompt}}
 	delete(raw, "prompt")
+	if err := s.applySkill(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	in := relay.ParseChatInput(raw)
 	in.Model = model
 	if !keyAllowed(key, model) {
@@ -105,7 +113,8 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		id := "chatcmpl-" + shortID()
 		first := true
 		var contentLen, reasoningLen int
-		out, usedProvider, err := s.eng.Chat(r.Context(), m, ps, in, func(d relay.StreamDelta) error {
+		stopHeartbeat := s.startHeartbeat(sse)
+		out, usedProvider, err := s.eng.Chat(r.Context(), m, ps, in, s.smoothEmit(func(d relay.StreamDelta) error {
 			chunk := map[string]any{
 				"id": id, "object": "chat.completion.chunk", "created": created, "model": m.Name,
 			}
@@ -141,7 +150,8 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 				return nil
 			}
 			return sse.send(chunk)
-		})
+		}))
+		stopHeartbeat()
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			sse.send(map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}})
@@ -269,6 +279,15 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请求体不是合法 JSON："+err.Error())
 		return
 	}
+	if err := s.applySkill(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	s.runImage(w, r, key, raw)
+}
+
+// runImage 执行图片生成；raw 已由调用方解析并完成技能渲染。
+func (s *Server) runImage(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any) {
 	model, _ := raw["model"].(string)
 	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)
@@ -358,6 +377,15 @@ func (s *Server) handleVideoCreate(w http.ResponseWriter, r *http.Request, key s
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请求体不是合法 JSON："+err.Error())
 		return
 	}
+	if err := s.applySkill(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	s.runVideoCreate(w, r, key, raw)
+}
+
+// runVideoCreate 提交视频任务；raw 已由调用方解析并完成技能渲染。
+func (s *Server) runVideoCreate(w http.ResponseWriter, r *http.Request, key store.APIKey, raw map[string]any) {
 	model, _ := raw["model"].(string)
 	if !keyAllowed(key, model) {
 		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权调用模型 "+model)

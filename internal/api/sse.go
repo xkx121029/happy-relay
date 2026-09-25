@@ -8,10 +8,12 @@ import (
 )
 
 // sseWriter 负责把结构化数据写成 OpenAI 风格的 SSE 事件流。
+// 心跳协程与业务协程会并发写入，因此所有写出都加锁。
 type sseWriter struct {
 	w    http.ResponseWriter
 	f    http.Flusher
 	once sync.Once
+	mu   sync.Mutex
 }
 
 func newSSEWriter(w http.ResponseWriter) *sseWriter {
@@ -36,11 +38,13 @@ func (s *sseWriter) start() {
 }
 
 func (s *sseWriter) send(v any) error {
-	s.start()
 	buf, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.start()
 	if _, err := s.w.Write([]byte("data: ")); err != nil {
 		return err
 	}
@@ -55,8 +59,19 @@ func (s *sseWriter) send(v any) error {
 }
 
 func (s *sseWriter) done() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.start()
 	_, _ = s.w.Write([]byte("data: [DONE]\n\n"))
+	s.flush()
+}
+
+// ping 发送一条 SSE 注释行，用于在长时间无输出时保持连接。
+func (s *sseWriter) ping() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.start()
+	_, _ = s.w.Write([]byte(": keep-alive\n\n"))
 	s.flush()
 }
 
