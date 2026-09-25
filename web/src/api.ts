@@ -42,6 +42,8 @@ export interface TemplateSpec {
 export interface ModelConfig {
   system_prompt?: string
   defaults?: Record<string, any>
+  /** 绑定多个渠道时的调度方式：failover（默认）| round_robin | random */
+  route_strategy?: string
   chat?: TemplateSpec | null
   image?: TemplateSpec | null
   video?: TemplateSpec | null
@@ -51,6 +53,8 @@ export interface ModelConfig {
 export interface Model {
   id: number
   provider_id: number
+  /** 绑定的渠道列表（有序，首个为默认），失败时按策略自动切换 */
+  provider_ids: number[]
   provider_name?: string
   provider_kind?: string
   name: string

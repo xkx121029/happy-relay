@@ -232,16 +232,16 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request, key st
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "缺少必填字段 input")
 		return
 	}
-	m, p, err := s.eng.Resolve(model)
+	m, ps, err := s.eng.ResolveAll(model)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "模型不可用："+err.Error())
 		return
 	}
 	start := time.Now()
-	out, usedProvider, err := s.eng.Embedding(r.Context(), m, p, &relay.EmbeddingInput{Model: model, Input: inputs})
+	out, usedProvider, err := s.eng.Embedding(r.Context(), m, ps, &relay.EmbeddingInput{Model: model, Input: inputs})
 	if err != nil {
 		s.logUsage(store.UsageLog{
-			Capability: store.CapEmbedding, Model: m.Name, ProviderName: safeName(usedProvider, p),
+			Capability: store.CapEmbedding, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 			APIKeyName: key.Name, Status: 502, LatencyMS: time.Since(start).Milliseconds(), Error: err.Error(),
 		})
 		writeErr(w, http.StatusBadGateway, "upstream_error", err.Error())
@@ -255,7 +255,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request, key st
 		"object": "list", "data": data, "model": m.Name, "usage": usageMap(out.Usage),
 	})
 	s.logUsage(store.UsageLog{
-		Capability: store.CapEmbedding, Model: m.Name, ProviderName: safeName(usedProvider, p),
+		Capability: store.CapEmbedding, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 		APIKeyName: key.Name, Status: 200, LatencyMS: time.Since(start).Milliseconds(),
 		PromptTokens: out.Usage.PromptTokens,
 	})
@@ -292,7 +292,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 		}
 		in.Options[k] = v
 	}
-	m, p, err := s.eng.Resolve(model)
+	m, ps, err := s.eng.ResolveAll(model)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "模型不可用："+err.Error())
 		return
@@ -302,10 +302,10 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 	if !s.cfg.DisableLogBody {
 		requestBody = previewOf(raw, 2000)
 	}
-	out, usedProvider, err := s.eng.Image(r.Context(), m, p, in)
+	out, usedProvider, err := s.eng.Image(r.Context(), m, ps, in)
 	if err != nil {
 		s.logUsage(store.UsageLog{
-			Capability: store.CapImage, Model: m.Name, ProviderName: safeName(usedProvider, p),
+			Capability: store.CapImage, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 			APIKeyName: key.Name, Status: 502, LatencyMS: time.Since(start).Milliseconds(),
 			Error: err.Error(), RequestBody: requestBody,
 		})
