@@ -101,13 +101,7 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
-// keyContext 保存本次请求使用的对外秘钥。
-type keyContext struct {
-	Key     store.APIKey
-	Request *http.Request
-}
-
-// withKey 校验 Bearer 秘钥，并把秘钥信息注入请求上下文。
+// withKey 校验 Bearer 秘钥，并把秘钥信息传给业务处理函数。
 func (s *Server) withKey(next func(http.ResponseWriter, *http.Request, store.APIKey)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
@@ -220,8 +214,6 @@ func pathID(r *http.Request) int64 {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	return id
 }
-
-func jsonNum(n int64) int64 { return n }
 
 // normalizeList 把前端传来的字符串数组清洗一遍。
 func normalizeList(in []string) []string {
