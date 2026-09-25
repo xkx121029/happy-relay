@@ -6,6 +6,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -19,21 +20,23 @@ import (
 )
 
 type Server struct {
-	cfg    *config.Config
-	st     *store.Store
-	eng    *relay.Engine
-	static fs.FS
+	cfg     *config.Config
+	st      *store.Store
+	eng     *relay.Engine
+	static  fs.FS
+	limiter *keyLimiter
 }
 
 func New(cfg *config.Config, st *store.Store, eng *relay.Engine, static fs.FS) *Server {
-	return &Server{cfg: cfg, st: st, eng: eng, static: static}
+	return &Server{cfg: cfg, st: st, eng: eng, static: static, limiter: newKeyLimiter()}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// ---------- 健康检查 ----------
+	// ---------- 健康检查与运维 ----------
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	// ---------- 对外 v1 ----------
 	mux.HandleFunc("GET /v1/models", s.withKey(s.handleModels))
@@ -53,12 +56,18 @@ func (s *Server) Handler() http.Handler {
 	// ---------- 面板管理 ----------
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
+	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/backup", s.handleBackupExport)
+	mux.HandleFunc("POST /api/backup", s.handleBackupImport)
 
 	mux.HandleFunc("GET /api/providers", s.handleProviderList)
 	mux.HandleFunc("POST /api/providers", s.handleProviderSave)
 	mux.HandleFunc("PUT /api/providers/{id}", s.handleProviderSave)
 	mux.HandleFunc("DELETE /api/providers/{id}", s.handleProviderDelete)
 	mux.HandleFunc("POST /api/providers/test", s.handleProviderTest)
+	mux.HandleFunc("GET /api/providers/health", s.handleProviderHealth)
+	mux.HandleFunc("POST /api/providers/reset", s.handleProviderResetAll)
+	mux.HandleFunc("POST /api/providers/{id}/reset", s.handleProviderReset)
 
 	mux.HandleFunc("GET /api/catalog", s.handleCatalogList)
 	mux.HandleFunc("POST /api/catalog", s.handleCatalogSave)
@@ -135,6 +144,28 @@ func (s *Server) withKey(next func(http.ResponseWriter, *http.Request, store.API
 		if key.ExpiresAt != "" && expired(key.ExpiresAt) {
 			writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥已过期")
 			return
+		}
+		// 分钟级限流。
+		if !s.limiter.allow(key.ID, key.RPM) {
+			writeErr(w, http.StatusTooManyRequests, "rate_limit_error",
+				fmt.Sprintf("超过每分钟请求上限（%d 次）", key.RPM))
+			return
+		}
+		// 每日配额（次数 / token）。
+		if key.DailyQuota > 0 || key.DailyTokens > 0 {
+			calls, tokens, err := s.st.APIKeyDailyUsage(key.Name)
+			if err == nil {
+				if key.DailyQuota > 0 && calls >= int64(key.DailyQuota) {
+					writeErr(w, http.StatusTooManyRequests, "quota_exceeded_error",
+						fmt.Sprintf("今天的调用次数已达上限（%d 次）", key.DailyQuota))
+					return
+				}
+				if key.DailyTokens > 0 && tokens >= int64(key.DailyTokens) {
+					writeErr(w, http.StatusTooManyRequests, "quota_exceeded_error",
+						fmt.Sprintf("今天的 token 用量已达上限（%d）", key.DailyTokens))
+					return
+				}
+			}
 		}
 		s.st.TouchAPIKey(key.Key)
 		next(w, r, key)
