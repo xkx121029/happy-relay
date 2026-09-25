@@ -1129,3 +1129,25 @@ details.expander[open] summary {
   flex-wrap: wrap;
   margin-bottom: 16px;
 }
+
+/* 探测到的模型行 */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.model-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.model-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--brand);
+  cursor: pointer;
+  flex: 0 0 auto;
+}

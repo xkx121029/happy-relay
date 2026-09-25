@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
-import { api, type ProbeResult, type Provider } from '../api'
+import { api, type ProbeModel, type ProbeResult, type Provider } from '../api'
 import { providers, state, toast } from '../store'
-import { copyText, kindLabel, strategyLabel } from '../utils'
+import { capLabel, copyText, kindLabel, strategyLabel } from '../utils'
 
 const loading = ref(true)
 const editing = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const importing = ref(false)
 
 const probeOpen = ref(false)
 const probeTitle = ref('')
 const probeResults = ref<ProbeResult[]>([])
+const probeProviderId = ref(0)
+const selected = ref<string[]>([])
 
 interface HeaderRow {
   k: string
@@ -54,6 +57,17 @@ const strategies = computed(
       { value: 'random', label: '随机' },
     ],
 )
+
+// 探测到的全部模型（跨入口去重），用于选择与导入。
+const allProbeModels = computed<ProbeModel[]>(() => {
+  const map = new Map<string, ProbeModel>()
+  for (const r of probeResults.value) {
+    for (const m of r.models || []) {
+      if (!map.has(m.id)) map.set(m.id, m)
+    }
+  }
+  return [...map.values()].sort((a, b) => a.id.localeCompare(b.id))
+})
 
 async function load() {
   loading.value = true
@@ -102,29 +116,33 @@ function clean(list: string[]) {
   return list.map((s) => s.trim()).filter(Boolean)
 }
 
+function buildPayload() {
+  const headers: Record<string, string> = {}
+  for (const h of form.headers) {
+    if (h.k.trim()) headers[h.k.trim()] = h.v.trim()
+  }
+  return {
+    id: form.id || undefined,
+    name: form.name.trim(),
+    kind: form.kind,
+    base_urls: clean(form.base_urls),
+    api_keys: clean(form.api_keys),
+    headers,
+    strategy: form.strategy,
+    timeout_sec: Number(form.timeout_sec) || 600,
+    enabled: form.enabled,
+    remark: form.remark.trim(),
+  }
+}
+
 async function save() {
   if (!form.name.trim()) {
     toast('请填写渠道名称', 'error')
     return
   }
-  const headers: Record<string, string> = {}
-  for (const h of form.headers) {
-    if (h.k.trim()) headers[h.k.trim()] = h.v.trim()
-  }
   saving.value = true
   try {
-    await api.saveProvider({
-      id: form.id || undefined,
-      name: form.name.trim(),
-      kind: form.kind,
-      base_urls: clean(form.base_urls),
-      api_keys: clean(form.api_keys),
-      headers,
-      strategy: form.strategy,
-      timeout_sec: Number(form.timeout_sec) || 600,
-      enabled: form.enabled,
-      remark: form.remark.trim(),
-    })
+    await api.saveProvider(buildPayload())
     toast('渠道已保存')
     editing.value = false
     await load()
@@ -146,16 +164,40 @@ async function remove(p: Provider) {
   }
 }
 
+// ---------- 探测与导入 ----------
+
+function selectDefaults() {
+  // 默认为「能识别出能力」的模型打勾，未识别的留给用户手动选择。
+  selected.value = allProbeModels.value.filter((m) => m.capability).map((m) => m.id)
+}
+
+function toggleModel(id: string) {
+  const i = selected.value.indexOf(id)
+  if (i >= 0) selected.value.splice(i, 1)
+  else selected.value.push(id)
+}
+
+function selectAll() {
+  selected.value = allProbeModels.value.map((m) => m.id)
+}
+
+function clearAll() {
+  selected.value = []
+}
+
 async function testSaved(p: Provider) {
   testing.value = true
-  probeTitle.value = `连通性测试 · ${p.name}`
+  probeProviderId.value = p.id
+  probeTitle.value = `获取模型 · ${p.name}`
   probeResults.value = []
+  selected.value = []
   probeOpen.value = true
   try {
     const res = await api.testProvider({ id: p.id })
     probeResults.value = res.results || []
+    selectDefaults()
   } catch (e: any) {
-    toast(e.message || '测试失败', 'error')
+    toast(e.message || '探测失败', 'error')
     probeOpen.value = false
   } finally {
     testing.value = false
@@ -170,8 +212,10 @@ async function testForm() {
   }
   const key = clean(form.api_keys)[0] || ''
   testing.value = true
-  probeTitle.value = `连通性测试 · ${form.name || '未命名渠道'}`
+  probeProviderId.value = form.id || 0
+  probeTitle.value = `获取模型 · ${form.name || '未命名渠道'}`
   probeResults.value = []
+  selected.value = []
   probeOpen.value = true
   try {
     const all: ProbeResult[] = []
@@ -184,14 +228,82 @@ async function testForm() {
       }
     }
     probeResults.value = all
+    selectDefaults()
   } finally {
     testing.value = false
+  }
+}
+
+// resolveImportProviderId 拿到模型要挂载的渠道；从编辑弹窗发起且尚未保存时自动先保存。
+async function resolveImportProviderId(): Promise<number> {
+  if (probeProviderId.value) return probeProviderId.value
+  if (!form.name.trim()) {
+    toast('请先填写渠道名称并保存，再导入模型', 'error')
+    return 0
+  }
+  const saved = await api.saveProvider(buildPayload())
+  form.id = saved.id
+  probeProviderId.value = saved.id
+  await load()
+  return saved.id
+}
+
+async function importSelected() {
+  if (!selected.value.length) {
+    toast('请先勾选要导入的模型', 'error')
+    return
+  }
+  importing.value = true
+  try {
+    const providerID = await resolveImportProviderId()
+    if (!providerID) return
+    const existing = new Set((await api.listModels()).map((m) => m.name))
+    let created = 0
+    let skipped = 0
+    let failed = 0
+    for (const id of selected.value) {
+      const item = allProbeModels.value.find((m) => m.id === id)
+      if (!item) continue
+      if (existing.has(id)) {
+        skipped++
+        continue
+      }
+      try {
+        await api.saveModel({
+          provider_id: providerID,
+          provider_ids: [providerID],
+          name: id,
+          upstream_name: id,
+          capability: item.capability || 'chat',
+          enabled: true,
+        })
+        existing.add(id)
+        created++
+      } catch {
+        failed++
+      }
+    }
+    const parts = [`已创建 ${created} 个模型`]
+    if (skipped) parts.push(`跳过已存在 ${skipped} 个`)
+    if (failed) parts.push(`失败 ${failed} 个`)
+    toast(parts.join('，'), failed ? 'error' : 'success')
+    probeOpen.value = false
+    selected.value = []
+    await load()
+  } catch (e: any) {
+    toast(e.message || '导入失败', 'error')
+  } finally {
+    importing.value = false
   }
 }
 
 async function copyKey(k: string) {
   const ok = await copyText(k)
   toast(ok ? '已复制密钥' : '复制失败', ok ? 'success' : 'error')
+}
+
+function capBadge(capability: string) {
+  return { chat: 'brand', image: 'warn', video: 'ok', embedding: '' }[capability] || ''
 }
 </script>
 
@@ -200,7 +312,7 @@ async function copyKey(k: string) {
     <div class="page-head">
       <div>
         <h2>渠道</h2>
-        <p>一个渠道可配置多个入口地址与多个密钥，实际调用是两者的组合。</p>
+        <p>一个渠道可配置多个入口地址与多个密钥；探测时会自动拉取可用模型并推断各自的能力。</p>
       </div>
       <div class="row">
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
@@ -242,7 +354,7 @@ async function copyKey(k: string) {
             </td>
             <td>
               <div class="row" style="justify-content: flex-end; gap: 6px">
-                <button class="btn btn-sm btn-ghost" @click="testSaved(p)">测试</button>
+                <button class="btn btn-sm btn-ghost" @click="testSaved(p)">获取模型</button>
                 <button class="btn btn-sm btn-ghost" @click="openEdit(p)">编辑</button>
                 <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="remove(p)">
                   删除
@@ -342,7 +454,7 @@ async function copyKey(k: string) {
       <template #footer>
         <button class="btn" :disabled="testing" @click="testForm">
           <span v-if="testing" class="spinner" />
-          <span v-else>测试连通性</span>
+          <span v-else>测试并获取模型</span>
         </button>
         <div class="spacer" />
         <button class="btn" @click="editing = false">取消</button>
@@ -353,28 +465,55 @@ async function copyKey(k: string) {
     </Modal>
 
     <!-- 探测结果 -->
-    <Modal v-if="probeOpen" :title="probeTitle" subtitle="逐个入口地址的探测结果" @close="probeOpen = false">
+    <Modal
+      v-if="probeOpen"
+      wide
+      :title="probeTitle"
+      subtitle="逐个入口地址探测，自动列出可用模型并推断能力，可直接导入为对外模型。"
+      @close="probeOpen = false"
+    >
       <div v-if="testing" class="row"><span class="spinner" /> <span class="muted">正在探测…</span></div>
-      <div v-else style="display: flex; flex-direction: column; gap: 12px">
-        <div v-for="(r, i) in probeResults" :key="i" class="card" style="padding: 14px">
-          <div class="row" style="justify-content: space-between">
-            <span class="mono clamp-1" style="max-width: 60%">{{ r.url }}</span>
-            <span class="badge" :class="r.ok ? 'ok' : 'danger'">{{ r.ok ? '正常' : '失败' }}</span>
-          </div>
-          <div class="muted" style="font-size: 12.5px; margin-top: 6px">
-            {{ r.detail }}
-            <span v-if="r.status">· HTTP {{ r.status }}</span>
-            <span> · {{ r.latency_ms }} ms</span>
-          </div>
-          <details v-if="r.models && r.models.length" class="expander">
-            <summary>探测到 {{ r.models.length }} 个模型</summary>
-            <div class="mono" style="font-size: 12px; max-height: 200px; overflow: auto">
-              <div v-for="m in r.models" :key="m">{{ m }}</div>
-            </div>
-          </details>
+
+      <template v-else>
+        <div v-if="allProbeModels.length" class="row" style="margin-bottom: 14px">
+          <span class="muted">已选 {{ selected.length }} / {{ allProbeModels.length }}</span>
+          <button class="btn btn-sm btn-ghost" @click="selectAll">全选</button>
+          <button class="btn btn-sm btn-ghost" @click="clearAll">清空</button>
+          <div class="spacer" />
+          <button class="btn btn-primary btn-sm" :disabled="importing || !selected.length" @click="importSelected">
+            {{ importing ? '导入中…' : `导入为模型（${selected.length}）` }}
+          </button>
         </div>
-        <div v-if="!probeResults.length" class="muted">暂无结果。</div>
-      </div>
+
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <div v-for="(r, i) in probeResults" :key="i" class="card" style="padding: 14px">
+            <div class="row" style="justify-content: space-between">
+              <span class="mono clamp-1" style="max-width: 60%">{{ r.url }}</span>
+              <span class="badge" :class="r.ok ? 'ok' : 'danger'">{{ r.ok ? '正常' : '失败' }}</span>
+            </div>
+            <div class="muted" style="font-size: 12.5px; margin-top: 6px">
+              {{ r.detail }}
+              <span v-if="r.status">· HTTP {{ r.status }}</span>
+              <span> · {{ r.latency_ms }} ms</span>
+            </div>
+            <div v-if="r.models && r.models.length" style="margin-top: 10px; max-height: 240px; overflow: auto">
+              <label
+                v-for="m in r.models"
+                :key="m.id"
+                class="model-row"
+                :title="m.hint || '未识别到能力特征'"
+              >
+                <input type="checkbox" :checked="selected.includes(m.id)" @change="toggleModel(m.id)" />
+                <span class="mono clamp-1" style="flex: 1; font-size: 12px">{{ m.id }}</span>
+                <span class="badge" :class="capBadge(m.capability)">
+                  {{ m.capability ? capLabel(m.capability) : '未识别' }}
+                </span>
+              </label>
+            </div>
+          </div>
+          <div v-if="!probeResults.length" class="muted">暂无结果。</div>
+        </div>
+      </template>
     </Modal>
   </div>
 </template>
