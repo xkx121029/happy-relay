@@ -21,6 +21,8 @@ type Config struct {
 	StreamSmooth   bool   // 是否把流式输出平滑成匀速下发
 	StreamRate     int    // 平滑输出速率上限（字符/秒）
 	HeartbeatSec   int    // SSE 心跳间隔（秒），0 表示关闭
+	BreakerFails   int    // 渠道连续失败多少次后熔断（0 关闭）
+	BreakerCoolSec int    // 熔断冷却时间（秒）
 }
 
 func Load() *Config {
@@ -37,6 +39,8 @@ func Load() *Config {
 		StreamSmooth:   getenvBool("RELAY_STREAM_SMOOTH", true),
 		StreamRate:     getenvInt("RELAY_STREAM_RATE", 120),
 		HeartbeatSec:   getenvIntZero("RELAY_SSE_HEARTBEAT", 15),
+		BreakerFails:   getenvIntZero("RELAY_BREAKER_FAILS", 5),
+		BreakerCoolSec: getenvInt("RELAY_BREAKER_COOLDOWN", 60),
 	}
 	return cfg
 }
