@@ -1,0 +1,1 @@
+{"name":"mockB","kind":"openai","base_urls":["http://127.0.0.1:9001/v1"],"api_keys":["sk-b"],"strategy":"failover","enabled":true}
