@@ -238,7 +238,7 @@ async function testForm() {
 async function resolveImportProviderId(): Promise<number> {
   if (probeProviderId.value) return probeProviderId.value
   if (!form.name.trim()) {
-    toast('请先填写渠道名称并保存，再导入模型', 'error')
+    toast('请先填写渠道名称并保存，再加入模型库', 'error')
     return 0
   }
   const saved = await api.saveProvider(buildPayload())
@@ -250,48 +250,24 @@ async function resolveImportProviderId(): Promise<number> {
 
 async function importSelected() {
   if (!selected.value.length) {
-    toast('请先勾选要导入的模型', 'error')
+    toast('请先勾选要入库的模型', 'error')
     return
   }
   importing.value = true
   try {
     const providerID = await resolveImportProviderId()
     if (!providerID) return
-    const existing = new Set((await api.listModels()).map((m) => m.name))
-    let created = 0
-    let skipped = 0
-    let failed = 0
-    for (const id of selected.value) {
-      const item = allProbeModels.value.find((m) => m.id === id)
-      if (!item) continue
-      if (existing.has(id)) {
-        skipped++
-        continue
-      }
-      try {
-        await api.saveModel({
-          provider_id: providerID,
-          provider_ids: [providerID],
-          name: id,
-          upstream_name: id,
-          capability: item.capability || 'chat',
-          enabled: true,
-        })
-        existing.add(id)
-        created++
-      } catch {
-        failed++
-      }
-    }
-    const parts = [`已创建 ${created} 个模型`]
-    if (skipped) parts.push(`跳过已存在 ${skipped} 个`)
-    if (failed) parts.push(`失败 ${failed} 个`)
-    toast(parts.join('，'), failed ? 'error' : 'success')
+    const models = selected.value
+      .map((id) => allProbeModels.value.find((m) => m.id === id))
+      .filter((m): m is ProbeModel => !!m)
+      .map((m) => ({ model_id: m.id, capability: m.capability || 'chat' }))
+    const res = await api.importCatalog({ provider_id: providerID, models })
+    toast(`已加入模型库：新增 ${res.created} 个，更新 ${res.updated} 个`)
     probeOpen.value = false
     selected.value = []
     await load()
   } catch (e: any) {
-    toast(e.message || '导入失败', 'error')
+    toast(e.message || '加入模型库失败', 'error')
   } finally {
     importing.value = false
   }
@@ -312,7 +288,9 @@ function capBadge(capability: string) {
     <div class="page-head">
       <div>
         <h2>渠道</h2>
-        <p>一个渠道可配置多个入口地址与多个密钥；探测时会自动拉取可用模型并推断各自的能力。</p>
+        <p>
+          一个渠道可配置多个入口地址与多个密钥；探测时会自动拉取可用模型并推断能力，加入「模型库」后即可在「模型」里引用。
+        </p>
       </div>
       <div class="row">
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
@@ -469,7 +447,7 @@ function capBadge(capability: string) {
       v-if="probeOpen"
       wide
       :title="probeTitle"
-      subtitle="逐个入口地址探测，自动列出可用模型并推断能力，可直接导入为对外模型。"
+      subtitle="逐个入口地址探测，自动列出可用模型并推断能力，可勾选加入模型库。"
       @close="probeOpen = false"
     >
       <div v-if="testing" class="row"><span class="spinner" /> <span class="muted">正在探测…</span></div>
@@ -481,7 +459,7 @@ function capBadge(capability: string) {
           <button class="btn btn-sm btn-ghost" @click="clearAll">清空</button>
           <div class="spacer" />
           <button class="btn btn-primary btn-sm" :disabled="importing || !selected.length" @click="importSelected">
-            {{ importing ? '导入中…' : `导入为模型（${selected.length}）` }}
+            {{ importing ? '入库中…' : `加入模型库（${selected.length}）` }}
           </button>
         </div>
 

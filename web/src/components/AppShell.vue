@@ -25,6 +25,7 @@ const groups: { name: string; items: NavItem[] }[] = [
     name: '配置',
     items: [
       { path: '/providers', label: '渠道', desc: '管理上游服务商与密钥' },
+      { path: '/catalog', label: '模型库', desc: '探测到的可用上游模型，仅供配置引用' },
       { path: '/models', label: '模型', desc: '配置对外模型与映射' },
       { path: '/keys', label: '秘钥', desc: '分发给客户端的访问凭据' },
       { path: '/skills', label: '技能', desc: '带参数的提示词模板' },
