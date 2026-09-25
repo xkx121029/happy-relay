@@ -34,7 +34,8 @@
 **统一对外接口**
 
 - `/v1/chat/completions`：支持 SSE 流式、多模态消息、function calling；无论上游是哪个协议，出去的格式都统一成 OpenAI 分片
-- `/v1/images/generations`、`/v1/embeddings`、`/v1/videos`（异步任务 + 后台自动轮询 + `/{id}/stream` 进度流）
+- `/v1/images/generations`：支持图生图与多图合成（参考图可传 URL 或 data URI），并可按上游要求把 `response_format` / 参考图放进 `extra_body`
+- `/v1/embeddings`、`/v1/videos`（异步任务 + 后台自动轮询 + `/{id}/stream` 进度流）
 - **流式输出平滑**：上游一次吐出的长文本会拆成小段匀速下发，客户端观感均匀；空闲时自动发心跳保活
 - **技能可对外调用**：`GET /v1/skills` 拿到技能清单与说明，调用时带 `skill` + `skill_params` 即可套用提示词模板
 - 对外模型名与上游模型名解耦，同一个上游模型可以暴露成多个不同默认参数的对外模型

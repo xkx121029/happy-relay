@@ -1,1 +1,0 @@
-{"name":"agnes-img","capability":"image","inputs":[{"provider_id":1,"upstream_name":"agnes-image-2.1-flash"}],"config":{"defaults":{"size":"2K","ratio":"16:9"}},"enabled":true}

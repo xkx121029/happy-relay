@@ -200,6 +200,34 @@ POST /v1/images/generations
 
 ---
 
+#### 输入参考图（图生图 / 多图合成）
+
+`/v1/images/generations` 支持传入参考图，字段名兼容 `image` / `images` / `image_url` / `input_image` / `reference_images`，也可以直接写 `extra_body.image`：
+
+```json
+{
+  "model": "agnes-img",
+  "prompt": "把物体改成橙色，保持原有构图",
+  "size": "1024x768",
+  "image": ["https://example.com/input.png"]
+}
+```
+
+参考图可以是公共可访问的 URL，也可以是 `data:image/png;base64,...` 形式的 data URI。传一张即为图生图，传多张即为多图合成。
+
+**接入 Agnes Image 2.1 Flash**
+
+该模型有几条非标准约束，按下面配置即可开箱兼容：
+
+| 约束 | 中转站里的做法 |
+| --- | --- |
+| `size` 必填，推荐 `1K` / `2K` / `3K` / `4K` 档位 | 在模型「默认参数」里填 `{"size": "2K", "ratio": "16:9"}` |
+| `response_format` 禁止出现在请求体顶层 | 模型编辑里把「图片请求模式」设为 `extra_body` |
+| 图生图必须放在 `extra_body.image` | 同上，设为 `extra_body` 后参考图会自动放进 `extra_body.image` |
+
+`extra_body` 模式下，`response_format` 与参考图都会被合并进 `extra_body`；客户端自己传入的 `extra_body` 字段优先，不会被覆盖。
+模板类渠道也能用参考图：`{{images}}` 是完整数组，`{{image}}` / `{{image_url}}` 取第一张。
+
 ### 6. 视频生成
 
 视频是异步任务，分两步：先提交，再轮询。
