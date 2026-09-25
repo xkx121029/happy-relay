@@ -608,6 +608,43 @@ func (s *Server) staticHandler() http.Handler {
 func videoPresets() []map[string]any {
 	return []map[string]any{
 		{
+			"name": "Agnes Video 2.5 Flash",
+			"description": "创建走 /v1/videos，查询走根路径 /agnesapi；支持 text / keyframe / reference " +
+				"三种模式，size 固定 720P，秒数为字符串。",
+			"capability": store.CapVideo,
+			"video": store.TemplateSpec{
+				Method: "POST", Path: "/videos",
+				// 空参数一律不下发：text 模式不允许出现图片/音频字段，传空会被判错。
+				OmitEmpty: true,
+				Body: map[string]any{
+					"model":        "{{upstream_model}}",
+					"prompt":       "{{prompt}}",
+					"mode":         "{{mode}}",
+					"seconds":      "{{duration_text}}",
+					"size":         "720P",
+					"aspect_ratio": "{{aspect_ratio}}",
+					"first_frame":  "{{first_frame}}",
+					"last_frame":   "{{last_frame}}",
+					"images":       "{{images}}",
+					"audios":       "{{audios}}",
+				},
+				Response: store.ResponseMap{
+					TaskID: "video_id", Status: "status", Progress: "progress", VideoURL: "url",
+				},
+			},
+			"video_query": store.TemplateSpec{
+				Method: "GET", Path: "{{base_root}}/agnesapi",
+				Query: map[string]string{
+					"video_id":   "{{task_id}}",
+					"model_name": "{{upstream_model}}",
+				},
+				Response: store.ResponseMap{
+					TaskID: "id", Status: "status", Progress: "progress",
+					VideoURL: "url", Error: "error",
+				},
+			},
+		},
+		{
 			"name":        "通用任务式（提交返回 task_id）",
 			"description": "适用于「POST 提交返回任务 ID，再 GET 查询」的绝大多数视频接口。",
 			"capability":  store.CapVideo,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -475,18 +476,29 @@ func (s *Server) runVideoCreate(w http.ResponseWriter, r *http.Request, key stor
 	}
 	in := &relay.VideoInput{Model: model, Extra: map[string]any{}}
 	in.Prompt, _ = raw["prompt"].(string)
-	in.ImageURL = firstString(raw, "image", "image_url", "first_frame_image", "input_reference")
+	// 兼容常见写法：单图、首尾帧、参考图 / 音频列表。
+	in.FirstFrame = firstString(raw, "first_frame", "first_frame_image", "image", "image_url", "input_reference")
+	in.LastFrame = firstString(raw, "last_frame", "last_frame_image")
+	in.ImageURL = in.FirstFrame
+	in.Mode, _ = raw["mode"].(string)
+	in.Images = stringList(raw, "images", "reference_images")
+	in.Audios = stringList(raw, "audios", "reference_audios")
 	in.Size, _ = raw["size"].(string)
-	if d, ok := raw["duration"].(float64); ok {
-		in.Duration = int(d)
-	}
-	if strings.TrimSpace(in.Prompt) == "" && in.ImageURL == "" {
-		writeErr(w, http.StatusBadRequest, "invalid_request_error", "缺少必填字段 prompt（或 image 用于图生视频）")
+	in.AspectRatio = firstString(raw, "aspect_ratio", "ratio")
+	// 时长：数字与字符串两种写法都接受（Agnes 的 seconds 是字符串）。
+	in.Duration = intOf(raw, "duration", "seconds")
+	if strings.TrimSpace(in.Prompt) == "" && in.FirstFrame == "" && len(in.Images) == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error",
+			"缺少必填字段 prompt（或 image / images 用于图生视频）")
 		return
 	}
 	for k, v := range raw {
 		switch k {
-		case "model", "prompt", "image", "image_url", "first_frame_image", "input_reference", "size", "duration":
+		case "model", "prompt", "mode",
+			"image", "image_url", "images", "reference_images",
+			"first_frame", "first_frame_image", "last_frame", "last_frame_image",
+			"audios", "reference_audios", "input_reference",
+			"size", "duration", "seconds", "aspect_ratio", "ratio":
 			continue
 		}
 		in.Extra[k] = v
@@ -816,6 +828,47 @@ func toStringList(v any) []string {
 		return out
 	}
 	return nil
+}
+
+// intOf 从请求体里取整数，兼容数字与数字字符串两种写法。
+func intOf(raw map[string]any, keys ...string) int {
+	for _, k := range keys {
+		switch v := raw[k].(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// stringList 收集多个字段名下的字符串列表，兼容只传单个字符串的写法。
+func stringList(raw map[string]any, keys ...string) []string {
+	out := []string{}
+	for _, k := range keys {
+		switch v := raw[k].(type) {
+		case string:
+			if s := strings.TrimSpace(v); s != "" {
+				out = append(out, s)
+			}
+		case []any:
+			for _, it := range v {
+				s, ok := it.(string)
+				if !ok {
+					continue
+				}
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func firstString(raw map[string]any, keys ...string) string {

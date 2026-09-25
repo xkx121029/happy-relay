@@ -60,7 +60,7 @@ func (s *Server) loadOptions() *Options {
 		StreamSmooth: settingBool(s.st, SettingStreamSmooth, def.StreamSmooth),
 		StreamRate:   settingInt(s.st, SettingStreamRate, def.StreamRate, 5, 100000),
 		HeartbeatSec: settingInt(s.st, SettingHeartbeatSec, def.HeartbeatSec, 0, 3600),
-		VideoPollSec: settingInt(s.st, SettingVideoPollSec, def.VideoPollSec, 3, 3600),
+		VideoPollSec: settingInt(s.st, SettingVideoPollSec, def.VideoPollSec, 1, 3600),
 	}
 }
 

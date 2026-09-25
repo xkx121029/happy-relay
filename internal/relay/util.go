@@ -231,6 +231,11 @@ func jsonPathString(root any, path string) string {
 		return strconv.FormatInt(t, 10)
 	case json.Number:
 		return t.String()
+	case map[string]any:
+		// 部分上游把错误写成对象（如 {"message": "..."}），这里取其中的可读信息。
+		return firstNonEmpty(
+			asString(t["message"]), asString(t["msg"]),
+			asString(t["detail"]), asString(t["error"]))
 	}
 	return ""
 }

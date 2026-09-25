@@ -19,8 +19,8 @@ func (s *Server) StartBackground(ctx context.Context) {
 func (s *Server) videoLoop(ctx context.Context) {
 	for {
 		interval := time.Duration(s.options().VideoPollSec) * time.Second
-		if interval < 3*time.Second {
-			interval = 3 * time.Second
+		if interval < time.Second {
+			interval = time.Second
 		}
 		select {
 		case <-ctx.Done():
