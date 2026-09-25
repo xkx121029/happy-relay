@@ -32,9 +32,12 @@
 **统一对外接口**
 
 - `/v1/chat/completions`：支持 SSE 流式、多模态消息、function calling；无论上游是哪个协议，出去的格式都统一成 OpenAI 分片
-- `/v1/images/generations`、`/v1/embeddings`、`/v1/videos`（异步任务 + 后台自动轮询）
+- `/v1/images/generations`、`/v1/embeddings`、`/v1/videos`（异步任务 + 后台自动轮询 + `/{id}/stream` 进度流）
+- **流式输出平滑**：上游一次吐出的长文本会拆成小段匀速下发，客户端观感均匀；空闲时自动发心跳保活
+- **技能可对外调用**：`GET /v1/skills` 拿到技能清单与说明，调用时带 `skill` + `skill_params` 即可套用提示词模板
 - 对外模型名与上游模型名解耦，同一个上游模型可以暴露成多个不同默认参数的对外模型
 - 跨协议状态归一化：上游五花八门的 `processing` / `done` / `finished` 统一成 `queued` / `running` / `succeeded` / `failed`
+- `/healthz` 免鉴权探活
 
 **网页面板**
 
@@ -42,6 +45,8 @@
 - **调试台**：不建秘钥就能直接在网页里跟模型对话（流式逐字输出）、出图、出视频
 - **站内技能**：带参数的提示词模板，一键套用，预置 10 个常用动作
 - **连接器生成器**：用系统级 AI 把一段接口描述翻译成可用的上游适配模板，并支持当场验证
+- **AI 生成技能**：描述一个任务，系统级 AI 自动产出带参数的提示词模板
+- **任务面板**：视频任务的进度、结果与取消
 - 秘钥级模型白名单与过期时间；调用日志含 token、耗时、请求体与响应预览
 
 **部署**
@@ -190,6 +195,9 @@ curl http://127.0.0.1:8787/v1/videos/task_xxxxxxxx \
 | `RELAY_VIDEO_POLL` | `10` | 视频任务后台轮询间隔（秒） |
 | `RELAY_MAX_LOG_ROWS` | `20000` | 调用日志保留条数上限，超出自动裁剪 |
 | `RELAY_DISABLE_LOG_BODY` | `0` | 设为 `1` 则不落库请求体与响应预览 |
+| `RELAY_STREAM_SMOOTH` | `1` | 设为 `0` 关闭流式输出平滑（原样透传上游分片） |
+| `RELAY_STREAM_RATE` | `120` | 平滑输出的速率上限（字符/秒） |
+| `RELAY_SSE_HEARTBEAT` | `15` | SSE 心跳间隔（秒），`0` 表示关闭 |
 
 ---
 

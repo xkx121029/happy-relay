@@ -260,9 +260,76 @@ GET /v1/videos/{id}
 
 `status` 只会是四个值之一：`queued`（排队中）、`running`（生成中）、`succeeded`（成功）、`failed`（失败，`error` 里带原因）。
 
-`GET /v1/videos/generations/{id}` 是等价写法，方便直连某些客户端的路径约定。
+### 7. 视频任务管理
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/v1/videos` | 列出该秘钥可见的视频任务（最多 50 条） |
+| GET | `/v1/videos/{id}` | 查询单个任务 |
+| DELETE | `/v1/videos/{id}` | 删除（取消）本地任务记录 |
+| GET | `/v1/videos/{id}/stream` | SSE 持续推送任务状态，直到结束或超时 30 分钟 |
+
+`DELETE` 只删除本地记录；上游任务是否随之取消取决于该上游是否提供取消接口。
+
+```bash
+# 进度流：状态或进度变化时才推送一条 data，结束时推送 data: [DONE]
+curl -N http://127.0.0.1:8787/v1/videos/task_xxxx/stream \
+  -H "Authorization: Bearer sk-xxxxxxxx"
+```
 
 > 任务提交后由服务端后台定时向上游查询状态，客户端不必自己带上游凭据。
+
+### 8. 技能列表与技能调用
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/v1/skills` | 返回启用的站内技能及其说明与参数定义 |
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "slug": "polish",
+      "name": "文案润色",
+      "description": "把口语化或生硬的表达改写成通顺、专业的书面中文。",
+      "category": "文本",
+      "capability": "chat",
+      "params": [{ "key": "input", "label": "原文", "type": "textarea" }]
+    }
+  ],
+  "usage": "在 /v1/chat/completions、/v1/images/generations、/v1/videos 里带上 skill=<slug> 与 skill_params={...} 即可套用"
+}
+```
+
+调用时把 `skill` 与 `skill_params` 一并带上，服务端会先渲染模板再转发上游：
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "skill": "translate",
+    "skill_params": { "input": "Hello world", "target": "中文" }
+  }'
+```
+
+- `skill_params` 里未填写的参数会回落到技能定义的默认值。
+- 对话类请求中技能会生成一条 `user` 消息；图片与视频请求中会生成 `prompt`。
+- `capability` 为 `image` / `video` 的技能请配合对应能力的模型使用。
+
+### 9. 健康检查
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/healthz` | 返回 `{"status":"ok"}`，不需要鉴权，供部署探活 |
+
+### 流式输出说明
+
+- `/v1/chat/completions` 的 `stream=true` 与 `/v1/videos/{id}/stream` 都是 SSE。
+- 服务端默认把上游的长文本**拆成小段匀速下发**，避免整段突然跳出；速率由 `RELAY_STREAM_RATE`（字符/秒，默认 120）控制，`RELAY_STREAM_SMOOTH=0` 可关闭。
+- 长时间无输出时会定期发送 `: keep-alive` 注释行，间隔由 `RELAY_SSE_HEARTBEAT`（秒，默认 15）控制。
 
 ---
 
@@ -609,10 +676,20 @@ GET /v1/videos/{id}
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/tasks?limit=50` | 视频任务列表，字段与 `/v1/videos/{id}` 一致 |
+| DELETE | `/api/tasks/{id}` | 删除任务记录（面板取消任务） |
 | GET | `/api/logs?limit=200&capability=chat&q=关键词` | 调用日志，按时间倒序 |
 | DELETE | `/api/logs` | 清空日志 |
 | GET | `/api/settings` | 读取全部设置 |
 | POST | `/api/settings` | 写入设置（传 `{"key": "value"}` 形式的对象，只覆盖传入的键） |
+| POST | `/api/skills/generate` | 用系统级 AI 依据描述生成技能草案 |
+
+`POST /api/skills/generate` 请求：
+
+```json
+{ "description": "把会议记录整理成待办清单，按负责人分组", "capability": "chat" }
+```
+
+返回 `{"draft": {...}, "raw_reply": "...", "system_model": "..."}`。`draft` 结构与 `POST /api/skills` 的请求体一致（含 `slug` / `name` / `prompt` / `params`），可直接编辑后保存；AI 未返回合法 JSON 时会把原文填入 `prompt` 并带上 `parse_error`。使用前需先在设置里指定 `system_model`。
 
 已知设置项：
 
