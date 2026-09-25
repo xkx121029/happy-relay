@@ -235,6 +235,9 @@ func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, i
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
 			continue
 		}
+		// 同一个对外模型在不同渠道上可以对应不同的上游模型名。
+		mu := m
+		mu.UpstreamName = m.UpstreamNameFor(p.ID)
 		for _, up := range cands {
 			emitted := false
 			var wrapped StreamFunc
@@ -244,7 +247,7 @@ func (e *Engine) Chat(ctx context.Context, m store.Model, ps []store.Provider, i
 					return emit(d)
 				}
 			}
-			out, err := a.Chat(withContext(ctx), up, m, in, wrapped)
+			out, err := a.Chat(withContext(ctx), up, mu, in, wrapped)
 			if err == nil {
 				return out, up.Provider, nil
 			}
@@ -280,8 +283,10 @@ func (e *Engine) Image(ctx context.Context, m store.Model, ps []store.Provider, 
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
 			continue
 		}
+		mu := m
+		mu.UpstreamName = m.UpstreamNameFor(p.ID)
 		for _, up := range cands {
-			out, err := a.Image(withContext(ctx), up, m, in)
+			out, err := a.Image(withContext(ctx), up, mu, in)
 			if err == nil {
 				return out, up.Provider, nil
 			}
@@ -313,8 +318,10 @@ func (e *Engine) Embedding(ctx context.Context, m store.Model, ps []store.Provid
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
 			continue
 		}
+		mu := m
+		mu.UpstreamName = m.UpstreamNameFor(p.ID)
 		for _, up := range cands {
-			out, err := a.Embedding(withContext(ctx), up, m, in)
+			out, err := a.Embedding(withContext(ctx), up, mu, in)
 			if err == nil {
 				return out, up.Provider, nil
 			}

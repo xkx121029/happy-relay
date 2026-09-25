@@ -52,8 +52,10 @@ func (e *Engine) CreateVideo(ctx context.Context, m store.Model, ps []store.Prov
 	}
 	var lastErr error
 	for _, p := range e.orderProviders(m, ps) {
+		mu := m
+		mu.UpstreamName = m.UpstreamNameFor(p.ID)
 		for _, up := range e.candidates(p) {
-			vars := videoVars(up, m, in, "")
+			vars := videoVars(up, mu, in, "")
 			raw, err := callTemplate(ctx, up, m.Config.Video, vars)
 			if err != nil {
 				lastErr = err
@@ -132,8 +134,10 @@ func (e *Engine) PollVideo(ctx context.Context, t store.VideoTask) (store.VideoT
 		}
 	}
 	var lastErr error
+	mu := m
+	mu.UpstreamName = m.UpstreamNameFor(p.ID)
 	for _, up := range ups {
-		vars := videoVars(up, m, in, t.UpstreamTaskID)
+		vars := videoVars(up, mu, in, t.UpstreamTaskID)
 		raw, err := callTemplate(ctx, up, spec, vars)
 		if err != nil {
 			lastErr = err
