@@ -190,7 +190,8 @@ async function testForm() {
 }
 
 async function copyKey(k: string) {
-  toast((await copyText(k)) ? '已复制密钥' : '复制失败', (await copyText(k)) ? 'success' : 'error')
+  const ok = await copyText(k)
+  toast(ok ? '已复制密钥' : '复制失败', ok ? 'success' : 'error')
 }
 </script>
 
