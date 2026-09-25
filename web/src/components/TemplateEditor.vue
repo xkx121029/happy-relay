@@ -81,7 +81,7 @@ const placeholders = '{{prompt}} {{upstream_model}} {{model}} {{image_url}} {{si
         v-model="bodyText"
         class="textarea code"
         rows="4"
-        placeholder='{"model": "{{upstream_model}}", "prompt": "{{prompt}}"}'
+        placeholder='{"model": "&#123;&#123;upstream_model&#125;&#125;", "prompt": "&#123;&#123;prompt&#125;&#125;"}'
         @blur="applyBody"
       />
       <div class="hint">可用占位符：{{ placeholders }}</div>

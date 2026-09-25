@@ -2,41 +2,17 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236d8cff'/%3E%3Cpath d='M9 22V10h3.2v4.4h7.6V10H23v12h-3.2v-4.6h-7.6V22H9z' fill='%230d0e12'/%3E%3C/svg%3E"
+    />
     <title>模型中转站</title>
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC",
-          "Microsoft YaHei", sans-serif;
-        background: #0d0e12;
-        color: #e8e9ee;
-      }
-      .box {
-        max-width: 520px;
-        padding: 32px;
-        line-height: 1.7;
-      }
-      code {
-        padding: 2px 6px;
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.08);
-      }
-    </style>
+    <script type="module" crossorigin src="/assets/index-D3csIPVI.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-Dcy6Pmdp.css">
   </head>
   <body>
-    <div class="box">
-      <h1>面板前端尚未构建</h1>
-      <p>
-        这是占位页面。请先在 <code>web/</code> 目录执行
-        <code>npm install &amp;&amp; npm run build</code>，构建产物会输出到
-        <code>internal/api/webdist/</code>，随后重新编译 Go 程序即可。
-      </p>
-      <p>对外接口不受影响，可直接使用 <code>/v1/*</code>。</p>
-    </div>
+    <div id="app"></div>
   </body>
 </html>

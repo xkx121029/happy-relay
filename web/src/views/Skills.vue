@@ -265,9 +265,11 @@ async function remove(sk: Skill) {
           v-model="form.prompt"
           class="textarea code"
           rows="6"
-          placeholder="你是……请处理下面的内容：&#10;{{input}}"
+          placeholder="你是……请处理下面的内容：&#10;&#123;&#123;input&#125;&#125;"
         />
-        <div class="hint">在模板里写入 {{ '{{参数 key}}' }}，例如 {{ '{{input}}' }}、{{ '{{target}}' }}。</div>
+        <div class="hint">
+          在模板里用双花括号包住参数 key 作为占位符，例如 &#123;&#123;input&#125;&#125;、&#123;&#123;target&#125;&#125;。
+        </div>
       </div>
 
       <div class="field">
