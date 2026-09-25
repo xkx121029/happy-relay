@@ -136,7 +136,7 @@ async function save() {
 }
 
 async function remove(p: Provider) {
-  if (!confirm(`确定删除渠道「${p.name}」？其下的模型也会一并删除。`)) return
+  if (!confirm(`确定删除渠道「${p.name}」？仅绑定该渠道的模型会被一并删除，绑定多个渠道的模型会自动摘除它。`)) return
   try {
     await api.deleteProvider(p.id)
     toast('已删除')

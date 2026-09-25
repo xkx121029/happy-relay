@@ -376,11 +376,11 @@ GET /v1/videos/{id}
 
 ### 模型 models
 
-一个模型 = 对外的模型名，指向某个渠道下的真实上游模型名。
+一个模型 = 对外的模型名，可以指向一个或多个渠道下的真实上游模型名。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/models` | 列出全部模型（含 `provider_name`、`provider_kind`） |
+| GET | `/api/models` | 列出全部模型（含 `provider_name`、`provider_kind`、`provider_ids`） |
 | POST | `/api/models` | 新建 |
 | PUT | `/api/models/{id}` | 更新 |
 | DELETE | `/api/models/{id}` | 删除 |
@@ -388,11 +388,13 @@ GET /v1/videos/{id}
 ```json
 {
   "provider_id": 1,
+  "provider_ids": [1, 2],
   "name": "gpt-4o-mini",
   "upstream_name": "gpt-4o-mini",
   "capability": "chat",
   "config": {
     "system_prompt": "",
+    "route_strategy": "failover",
     "defaults": { "temperature": 0.7 }
   },
   "enabled": true
@@ -400,8 +402,10 @@ GET /v1/videos/{id}
 ```
 
 - `name` 是客户端填的模型名，`upstream_name` 是发给上游的真实名字。两者解耦，因此同一个上游模型可以暴露成多个不同默认参数的对外模型。
+- `provider_ids` 是绑定的渠道列表（有序，首个为默认），`provider_id` 冗余保存首个以兼容旧数据；只传 `provider_id` 时等价于单渠道。
 - `capability`：`chat` 文本 / `image` 图片 / `video` 视频 / `embedding` 向量。
 - `defaults` 里的键值会合并进上游请求体，可用来固定温度、`max_tokens`、`top_p` 等；客户端显式传入的同名参数优先。
+- `route_strategy`：绑定多个渠道时的调度方式，`failover`（默认，按 `provider_ids` 顺序逐个尝试）/ `round_robin` / `random`。每次调用先按该策略排列渠道，再在渠道内按渠道自身的策略排列「入口 × 密钥」；全部失败才返回错误，流式响应一旦开始下发就不再切换。
 
 **模板类模型的额外配置**
 

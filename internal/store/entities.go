@@ -166,12 +166,65 @@ func (s *Store) SaveProvider(p Provider) (Provider, error) {
 }
 
 func (s *Store) DeleteProvider(id int64) error {
+	// 多渠道绑定时，先把该渠道从模型的绑定列表里摘除，
+	// 只有「仅绑定该渠道」的模型才会被外键级联删除。
+	if err := s.detachProviderFromModels(id); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`DELETE FROM providers WHERE id=?`, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// detachProviderFromModels 把指定渠道从所有模型的绑定列表中移除。
+// 若模型还绑定了其它渠道，则保留该模型并改写主渠道；否则保持原样交给外键级联删除。
+func (s *Store) detachProviderFromModels(id int64) error {
+	rows, err := s.db.Query(`SELECT id,provider_id,provider_ids FROM models`)
+	if err != nil {
+		return err
+	}
+	type bound struct {
+		id      int64
+		primary int64
+		ids     []int64
+	}
+	var items []bound
+	for rows.Next() {
+		var modelID, primary int64
+		var raw string
+		if err := rows.Scan(&modelID, &primary, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		ids := cleanIDs(unmarshal(raw, []int64{}))
+		if len(ids) == 0 && primary > 0 {
+			ids = []int64{primary}
+		}
+		items = append(items, bound{id: modelID, primary: primary, ids: ids})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, it := range items {
+		remain := make([]int64, 0, len(it.ids))
+		for _, v := range it.ids {
+			if v != id {
+				remain = append(remain, v)
+			}
+		}
+		if len(remain) == len(it.ids) || len(remain) == 0 {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE models SET provider_id=?,provider_ids=? WHERE id=?`,
+			remain[0], marshal(remain), it.id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
