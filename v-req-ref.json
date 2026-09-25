@@ -1,0 +1,1 @@
+{"model":"agnes-video","prompt":"让 <Picture 1> 里的人物动起来","mode":"reference","images":["https://example.com/a.png","https://example.com/b.png"],"audios":["https://example.com/x.mp3"],"duration":"8"}
