@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,13 +16,26 @@ import (
 )
 
 // VideoInput 是统一的视频生成入参。
+// 各家上游对「图生视频」的表达差异很大，这里同时保留单图与多素材两组字段，
+// 由模板按需取用：Agnes 的 keyframe 模式用首尾帧，reference 模式用参考图与音频。
 type VideoInput struct {
-	Model    string
-	Prompt   string
+	Model  string
+	Prompt string
+	// ImageURL 是通用的首帧图，兼容早期只支持单图的上游。
 	ImageURL string
+	// Mode 对应 Agnes 的 text / keyframe / reference，留空按 text 处理。
+	Mode string
+	// FirstFrame / LastFrame 用于首尾帧控制。
+	FirstFrame string
+	LastFrame  string
+	// Images / Audios 是多素材参考模式的输入列表。
+	Images   []string
+	Audios   []string
 	Duration int
 	Size     string
-	Extra    map[string]any
+	// AspectRatio 是画幅比例（如 16:9），留空则由上游决定。
+	AspectRatio string
+	Extra       map[string]any
 }
 
 // 视频供应商的状态值五花八门，这里统一归一化。
@@ -181,15 +195,31 @@ func (e *Engine) PollVideo(ctx context.Context, t store.VideoTask) (store.VideoT
 
 // videoVars 组装模板占位符。
 func videoVars(up Upstream, m store.Model, in *VideoInput, upstreamTaskID string) map[string]any {
+	// 首帧图：显式指定优先，其次回退到通用的 image 字段。
+	first := firstNonEmpty(in.FirstFrame, in.ImageURL)
+	seconds := ""
+	if in.Duration > 0 {
+		seconds = strconv.Itoa(in.Duration)
+	}
 	vars := map[string]any{
 		"prompt":         in.Prompt,
 		"input":          in.Prompt,
 		"model":          m.Name,
 		"upstream_model": m.UpstreamName,
-		"image":          in.ImageURL,
-		"image_url":      in.ImageURL,
-		"key":            up.APIKey,
-		"task_id":        upstreamTaskID,
+		"base_root":      baseRoot(up.BaseURL),
+		"image":          first,
+		"image_url":      first,
+		"first_frame":    first,
+		"last_frame":     in.LastFrame,
+		"images":         in.Images,
+		"audios":         in.Audios,
+		"mode":           firstNonEmpty(in.Mode, "text"),
+		"aspect_ratio":   in.AspectRatio,
+		// 部分上游（如 Agnes）要求时长是字符串，这里同时给出数字与文本两种形式。
+		"duration_text": seconds,
+		"seconds":       seconds,
+		"key":           up.APIKey,
+		"task_id":       upstreamTaskID,
 	}
 	if in.Duration > 0 {
 		vars["duration"] = in.Duration
@@ -264,9 +294,7 @@ func callTemplate(ctx context.Context, up Upstream, spec *store.TemplateSpec, va
 	if method == "" {
 		method = "POST"
 	}
-	path := renderTemplateString(spec.Path, vars)
-	rawPath := strings.TrimRight(up.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
-	endpoint, err := url.Parse(rawPath)
+	endpoint, err := url.Parse(resolveEndpoint(up.BaseURL, renderTemplateString(spec.Path, vars)))
 	if err != nil {
 		return nil, fmt.Errorf("模板路径无法解析：%w", err)
 	}
@@ -287,6 +315,9 @@ func callTemplate(ctx context.Context, up Upstream, spec *store.TemplateSpec, va
 	var body any
 	if method != "GET" && len(spec.Body) > 0 {
 		body = renderTemplate(spec.Body, vars)
+		if spec.OmitEmpty {
+			body = omitEmptyValues(body)
+		}
 	}
 	resp, err := doJSON(ctx, up, method, endpoint.String(), headers, body)
 	if err != nil {
