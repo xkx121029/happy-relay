@@ -168,14 +168,14 @@ func (e *Engine) PollVideo(ctx context.Context, t store.VideoTask) (store.VideoT
 // videoVars 组装模板占位符。
 func videoVars(up Upstream, m store.Model, in *VideoInput, upstreamTaskID string) map[string]any {
 	vars := map[string]any{
-		"prompt":        in.Prompt,
-		"input":         in.Prompt,
-		"model":         m.Name,
+		"prompt":         in.Prompt,
+		"input":          in.Prompt,
+		"model":          m.Name,
 		"upstream_model": m.UpstreamName,
-		"image":         in.ImageURL,
-		"image_url":     in.ImageURL,
-		"key":           up.APIKey,
-		"task_id":       upstreamTaskID,
+		"image":          in.ImageURL,
+		"image_url":      in.ImageURL,
+		"key":            up.APIKey,
+		"task_id":        upstreamTaskID,
 	}
 	if in.Duration > 0 {
 		vars["duration"] = in.Duration

@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 import (
 	"context"
@@ -27,10 +27,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 			continue
 		}
 		data = append(data, map[string]any{
-			"id":       m.Name,
-			"object":   "model",
-			"created":  created,
-			"owned_by": m.ProviderName,
+			"id":         m.Name,
+			"object":     "model",
+			"created":    created,
+			"owned_by":   m.ProviderName,
 			"capability": m.Capability,
 		})
 	}
@@ -169,7 +169,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 			Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, p),
 			APIKeyName: key.Name, Status: 200, Stream: true, LatencyMS: latency,
 			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
-			RequestBody: requestBody,
+			RequestBody:     requestBody,
 			ResponsePreview: fmt.Sprintf("流式输出：正文 %d 字符，思考 %d 字符", contentLen, reasoningLen),
 		})
 		return

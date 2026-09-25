@@ -33,11 +33,11 @@ type Usage struct {
 
 // ContentPart 是对话中的一段内容，已归一化为文本或图片。
 type ContentPart struct {
-	Type     string // text | image
-	Text     string
-	MIME     string
-	Data     []byte // 图片二进制（data URL 已解码）
-	Remote   string // 图片远程地址（http(s) URL 原样透传）
+	Type   string // text | image
+	Text   string
+	MIME   string
+	Data   []byte // 图片二进制（data URL 已解码）
+	Remote string // 图片远程地址（http(s) URL 原样透传）
 }
 
 // ToolCall 表示模型请求调用的工具。
@@ -117,10 +117,10 @@ type ImageInput struct {
 }
 
 type ImageOutput struct {
-	Created int64        `json:"created"`
-	Items   []ImageItem  `json:"items"`
-	Usage   *Usage       `json:"usage,omitempty"`
-	Extra   interface{}  `json:"-"`
+	Created int64       `json:"created"`
+	Items   []ImageItem `json:"items"`
+	Usage   *Usage      `json:"usage,omitempty"`
+	Extra   interface{} `json:"-"`
 }
 
 type ImageItem struct {

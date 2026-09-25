@@ -474,7 +474,7 @@ func (s *Server) staticHandler() http.Handler {
 func videoPresets() []map[string]any {
 	return []map[string]any{
 		{
-			"name": "通用任务式（提交返回 task_id）",
+			"name":        "通用任务式（提交返回 task_id）",
 			"description": "适用于「POST 提交返回任务 ID，再 GET 查询」的绝大多数视频接口。",
 			"capability":  store.CapVideo,
 			"video": store.TemplateSpec{
@@ -492,12 +492,12 @@ func videoPresets() []map[string]any {
 			},
 		},
 		{
-			"name": "OpenAI 风格视频接口（/v1/videos）",
+			"name":        "OpenAI 风格视频接口（/v1/videos）",
 			"description": "对齐 OpenAI 视频生成写法的上游：POST 建任务，GET /v1/videos/{id} 查询。",
 			"capability":  store.CapVideo,
 			"video": store.TemplateSpec{
 				Method: "POST", Path: "/videos",
-				Body: map[string]any{"model": "{{upstream_model}}", "prompt": "{{prompt}}", "size": "{{size}}"},
+				Body:     map[string]any{"model": "{{upstream_model}}", "prompt": "{{prompt}}", "size": "{{size}}"},
 				Response: store.ResponseMap{TaskID: "id", Status: "status", VideoURL: "video_url"},
 			},
 			"video_query": store.TemplateSpec{
@@ -507,12 +507,12 @@ func videoPresets() []map[string]any {
 			},
 		},
 		{
-			"name": "同步返回视频地址",
+			"name":        "同步返回视频地址",
 			"description": "上游等待生成完成后直接返回视频链接，无需轮询。",
 			"capability":  store.CapVideo,
 			"video": store.TemplateSpec{
 				Method: "POST", Path: "/generate",
-				Body:   map[string]any{"model": "{{upstream_model}}", "prompt": "{{prompt}}"},
+				Body: map[string]any{"model": "{{upstream_model}}", "prompt": "{{prompt}}"},
 				Response: store.ResponseMap{VideoURL: "data.video_url", Status: "data.status",
 					SuccessValue: "success"},
 			},

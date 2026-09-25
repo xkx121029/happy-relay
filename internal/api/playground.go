@@ -183,7 +183,7 @@ func (s *Server) handleConnectorGenerate(w http.ResponseWriter, r *http.Request)
 	s.logUsage(store.UsageLog{
 		Capability: "connector", Model: systemModel, ProviderName: provider,
 		APIKeyName: panelKey.Name, Status: 200,
-		LatencyMS: time.Since(start).Milliseconds(),
+		LatencyMS:    time.Since(start).Milliseconds(),
 		PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens,
 		ResponsePreview: truncateStr(out.Content, 1200),
 	})
@@ -282,11 +282,11 @@ func extractJSONObject(s string) string {
 // handleConnectorTry 用草案配置对上游发起一次真实调用，验证配对是否正确。
 func (s *Server) handleConnectorTry(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProviderID   int64              `json:"provider_id"`
-		UpstreamName string             `json:"upstream_name"`
-		Prompt       string             `json:"prompt"`
-		Duration     int                `json:"duration"`
-		Size         string             `json:"size"`
+		ProviderID   int64               `json:"provider_id"`
+		UpstreamName string              `json:"upstream_name"`
+		Prompt       string              `json:"prompt"`
+		Duration     int                 `json:"duration"`
+		Size         string              `json:"size"`
 		Spec         *store.TemplateSpec `json:"spec"`
 	}
 	if err := decodeBody(r, &req); err != nil {
