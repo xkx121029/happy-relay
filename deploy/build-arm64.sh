@@ -30,11 +30,22 @@ if [[ "${1:-}" == "--push" ]]; then
   echo "==> 已推送到 ${IMAGE}:${TAG}"
 else
   echo "==> 构建 ${IMAGE}:${TAG} (${PLATFORM}) 并导出到 ${OUTFILE}"
-  docker buildx build \
+  # 部分 Docker Desktop 版本用 docker-container 驱动直接导出 tar 时会报
+  # "x-docker-expose-session-sharedkey contains value with non-printable ASCII characters"，
+  # 这里失败后自动退回 --load + docker save。
+  if ! docker buildx build \
     --platform "${PLATFORM}" \
     -f deploy/Dockerfile \
     -t "${IMAGE}:${TAG}" \
-    -o "type=docker,dest=${OUTFILE}" .
+    -o "type=docker,dest=${OUTFILE}" .; then
+    echo "==> 直接导出 tar 失败，改用 --load + docker save"
+    docker buildx build \
+      --platform "${PLATFORM}" \
+      -f deploy/Dockerfile \
+      -t "${IMAGE}:${TAG}" \
+      --load .
+    docker save "${IMAGE}:${TAG}" -o "${OUTFILE}"
+  fi
   echo
   echo "==> 完成：${OUTFILE}"
   echo "    拷到目标机器后执行： docker load -i ${OUTFILE}"
