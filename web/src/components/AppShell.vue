@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { panelTitle } from '../store'
+import { cycleTheme, panelTitle, prefs, themeLabel, toast } from '../store'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +49,11 @@ const current = computed(() => {
 function go(path: string) {
   router.push(path)
 }
+
+// toggleTheme 在深色 / 浅色 / 跟随系统之间循环，即时生效。
+function toggleTheme() {
+  toast(`主题已切换为「${themeLabel(cycleTheme())}」`, 'info')
+}
 </script>
 
 <template>
@@ -83,6 +88,14 @@ function go(path: string) {
       <header class="topbar">
         <h1>{{ current.label }}</h1>
         <span class="sub">{{ current.desc }}</span>
+        <div class="spacer" />
+        <button
+          class="btn btn-sm btn-ghost"
+          :title="'切换主题（当前：' + themeLabel(prefs.theme) + '）'"
+          @click="toggleTheme"
+        >
+          {{ themeLabel(prefs.theme) }}
+        </button>
       </header>
       <main class="content">
         <slot />

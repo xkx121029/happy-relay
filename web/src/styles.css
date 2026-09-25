@@ -465,6 +465,88 @@ a {
   flex: 0 0 auto;
 }
 
+/* ---------- 主题：浅色 ---------- */
+/* 只覆盖颜色变量与少量硬编码色值，组件样式无需改动。 */
+
+:root[data-theme='light'] {
+  --bg: #f4f6fb;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eef1f8;
+  --bg-hover: #e7ebf5;
+  --border: rgba(17, 24, 39, 0.1);
+  --border-strong: rgba(17, 24, 39, 0.2);
+  --text: #171a21;
+  --text-dim: #5a6172;
+  --text-mute: #878ea0;
+  --brand: #4f6ef7;
+  --brand-dim: rgba(79, 110, 247, 0.1);
+  --brand-strong: #3a55d0;
+  --ok: #15803d;
+  --ok-dim: rgba(21, 128, 61, 0.12);
+  --warn: #b45309;
+  --warn-dim: rgba(180, 83, 9, 0.12);
+  --danger: #dc2626;
+  --danger-dim: rgba(220, 38, 38, 0.1);
+  --shadow: 0 12px 32px rgba(17, 24, 39, 0.12);
+}
+
+:root[data-theme='light'] .topbar {
+  background: rgba(244, 246, 251, 0.86);
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background: rgba(17, 24, 39, 0.18);
+  background-clip: content-box;
+}
+:root[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 24, 39, 0.32);
+  background-clip: content-box;
+}
+
+:root[data-theme='light'] .switch .track {
+  background: rgba(17, 24, 39, 0.16);
+}
+
+:root[data-theme='light'] .brand .logo,
+:root[data-theme='light'] .btn-primary {
+  color: #fff;
+}
+
+:root[data-theme='light'] .select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%235a6172' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* ---------- 界面密度：紧凑 ---------- */
+
+:root[data-density='compact'] .content {
+  padding: 14px 16px 44px;
+}
+:root[data-density='compact'] .card {
+  padding: 13px 14px;
+}
+:root[data-density='compact'] .stat {
+  padding: 12px 14px;
+}
+:root[data-density='compact'] .stat .value {
+  font-size: 21px;
+  margin-top: 3px;
+}
+:root[data-density='compact'] .page-head {
+  margin-bottom: 12px;
+}
+:root[data-density='compact'] .field {
+  margin-bottom: 10px;
+}
+:root[data-density='compact'] .grid {
+  gap: 12px;
+}
+:root[data-density='compact'] .nav-item {
+  padding: 6px 12px;
+}
+:root[data-density='compact'] .topbar {
+  height: 50px;
+}
+
 .switch .track::after {
   content: "";
   position: absolute;

@@ -231,12 +231,30 @@ export interface VideoPreset {
   video_query?: TemplateSpec
 }
 
+/** 服务端运行参数：面板里改完即刻生效，无需重启。 */
+export interface RuntimeOptions {
+  max_log_rows: number
+  log_body: boolean
+  stream_smooth: boolean
+  stream_rate: number
+  heartbeat_sec: number
+  video_poll_sec: number
+}
+
+export interface RuntimeInfo {
+  /** 当前生效值 */
+  values: RuntimeOptions
+  /** 环境变量等启动配置提供的默认值 */
+  defaults: RuntimeOptions
+}
+
 export interface Meta {
   kinds: OptionItem[]
   capabilities: OptionItem[]
   strategies: OptionItem[]
   video_presets: VideoPreset[]
   settings: Record<string, string>
+  runtime?: RuntimeInfo
 }
 
 export interface Overview {
