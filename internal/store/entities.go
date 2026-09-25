@@ -622,8 +622,10 @@ func (s *Store) SaveAPIKey(k APIKey) (APIKey, error) {
 		k.CreatedAt = ts
 		return k, nil
 	}
-	_, err := s.db.Exec(`UPDATE api_keys SET name=?,models=?,enabled=?,expires_at=?,remark=? WHERE id=?`,
-		k.Name, marshal(cleanList(k.Models)), boolInt(k.Enabled), k.ExpiresAt, k.Remark, k.ID)
+	_, err := s.db.Exec(`UPDATE api_keys SET name=?,models=?,enabled=?,expires_at=?,remark=?,
+		rpm=?,daily_quota=?,daily_tokens=? WHERE id=?`,
+		k.Name, marshal(cleanList(k.Models)), boolInt(k.Enabled), k.ExpiresAt, k.Remark,
+		k.RPM, k.DailyQuota, k.DailyTokens, k.ID)
 	if err != nil {
 		return k, err
 	}
