@@ -51,13 +51,15 @@ func (e *Engine) CreateVideo(ctx context.Context, m store.Model, ps []store.Prov
 		return store.VideoTask{}, errors.New("该视频模型未配置提交任务模板，请在模型编辑里填写")
 	}
 	var lastErr error
-	for _, p := range e.orderProviders(m, ps) {
+	for _, p := range e.orderForTry(m, ps) {
 		mu := m
 		mu.UpstreamName = m.UpstreamNameFor(p.ID)
+		var providerErr error
 		for _, up := range e.candidates(p) {
 			vars := videoVars(up, mu, in, "")
 			raw, err := callTemplate(ctx, up, m.Config.Video, vars)
 			if err != nil {
+				providerErr = err
 				lastErr = err
 				continue
 			}
@@ -85,8 +87,10 @@ func (e *Engine) CreateVideo(ctx context.Context, m store.Model, ps []store.Prov
 				}
 			}
 			task.Result = mustJSON(buildVideoResult(raw, spec))
+			e.breaker.report(p.ID, nil)
 			return e.st.CreateVideoTask(task)
 		}
+		e.breaker.report(p.ID, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("渠道未配置任何入口地址")

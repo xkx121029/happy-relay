@@ -37,7 +37,7 @@ func main() {
 	}
 	defer st.Close()
 
-	eng := relay.NewEngine(st)
+	eng := relay.NewEngine(st, cfg.BreakerFails, cfg.BreakerCoolSec)
 	srv := api.New(cfg, st, eng, api.StaticFS())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

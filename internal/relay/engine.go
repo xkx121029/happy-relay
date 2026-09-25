@@ -279,30 +279,36 @@ func (e *Engine) Image(ctx context.Context, m store.Model, ps []store.Provider, 
 	mergeImageDefaults(m, in)
 	var lastErr error
 	var lastProvider store.Provider
-	for _, p := range e.orderProviders(m, ps) {
+	for _, p := range e.orderForTry(m, ps) {
 		lastProvider = p
 		a, err := e.adapterFor(p.Kind, store.CapImage)
 		if err != nil {
 			lastErr = err
+			e.breaker.report(p.ID, err)
 			continue
 		}
 		cands := e.candidates(p)
 		if len(cands) == 0 {
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			e.breaker.report(p.ID, lastErr)
 			continue
 		}
 		mu := m
 		mu.UpstreamName = m.UpstreamNameFor(p.ID)
+		var providerErr error
 		for _, up := range cands {
 			out, err := a.Image(withContext(ctx), up, mu, in)
 			if err == nil {
+				e.breaker.report(p.ID, nil)
 				return out, up.Provider, nil
 			}
+			providerErr = err
 			lastErr = err
 			if ctx != nil && ctx.Err() != nil {
 				return nil, up.Provider, err
 			}
 		}
+		e.breaker.report(p.ID, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("没有可用的上游渠道")
@@ -314,30 +320,36 @@ func (e *Engine) Image(ctx context.Context, m store.Model, ps []store.Provider, 
 func (e *Engine) Embedding(ctx context.Context, m store.Model, ps []store.Provider, in *EmbeddingInput) (*EmbeddingOutput, store.Provider, error) {
 	var lastErr error
 	var lastProvider store.Provider
-	for _, p := range e.orderProviders(m, ps) {
+	for _, p := range e.orderForTry(m, ps) {
 		lastProvider = p
 		a, err := e.adapterFor(p.Kind, store.CapEmbedding)
 		if err != nil {
 			lastErr = err
+			e.breaker.report(p.ID, err)
 			continue
 		}
 		cands := e.candidates(p)
 		if len(cands) == 0 {
 			lastErr = errors.New("渠道「" + p.Name + "」未配置任何入口地址")
+			e.breaker.report(p.ID, lastErr)
 			continue
 		}
 		mu := m
 		mu.UpstreamName = m.UpstreamNameFor(p.ID)
+		var providerErr error
 		for _, up := range cands {
 			out, err := a.Embedding(withContext(ctx), up, mu, in)
 			if err == nil {
+				e.breaker.report(p.ID, nil)
 				return out, up.Provider, nil
 			}
+			providerErr = err
 			lastErr = err
 			if ctx != nil && ctx.Err() != nil {
 				return nil, up.Provider, err
 			}
 		}
+		e.breaker.report(p.ID, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("没有可用的上游渠道")
