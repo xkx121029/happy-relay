@@ -60,6 +60,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/providers/{id}", s.handleProviderDelete)
 	mux.HandleFunc("POST /api/providers/test", s.handleProviderTest)
 
+	mux.HandleFunc("GET /api/catalog", s.handleCatalogList)
+	mux.HandleFunc("POST /api/catalog", s.handleCatalogSave)
+	mux.HandleFunc("PUT /api/catalog/{id}", s.handleCatalogSave)
+	mux.HandleFunc("DELETE /api/catalog/{id}", s.handleCatalogDelete)
+	mux.HandleFunc("POST /api/catalog/import", s.handleCatalogImport)
+
 	mux.HandleFunc("GET /api/models", s.handleModelList)
 	mux.HandleFunc("POST /api/models", s.handleModelSave)
 	mux.HandleFunc("PUT /api/models/{id}", s.handleModelSave)

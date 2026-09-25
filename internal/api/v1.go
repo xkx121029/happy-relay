@@ -22,9 +22,13 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 	}
 	created := time.Now().Unix()
 	data := []map[string]any{}
+	hasChat := false
 	for _, m := range models {
 		if !m.Enabled || !keyAllowed(key, m.Name) {
 			continue
+		}
+		if m.Capability == store.CapChat && m.Name != relay.AutoModelName {
+			hasChat = true
 		}
 		data = append(data, map[string]any{
 			"id":         m.Name,
@@ -33,6 +37,17 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 			"owned_by":   m.ProviderName,
 			"capability": m.Capability,
 		})
+	}
+	// 自动模型：按任务难度在已启用的文本模型里挑选。
+	if hasChat && keyAllowed(key, relay.AutoModelName) {
+		data = append([]map[string]any{{
+			"id":         relay.AutoModelName,
+			"object":     "model",
+			"created":    created,
+			"owned_by":   "relay",
+			"capability": store.CapChat,
+			"auto":       true,
+		}}, data...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
@@ -122,7 +137,19 @@ func (s *Server) handleLegacyCompletion(w http.ResponseWriter, r *http.Request, 
 // runChat 执行对话请求；withMeta 为 true 时（面板调试台）会额外回传命中的上游信息。
 func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKey, in *relay.ChatInput, withMeta bool) {
 	start := time.Now()
-	m, ps, err := s.eng.ResolveAll(in.Model)
+	requested := in.Model
+	var m store.Model
+	var ps []store.Provider
+	var difficulty *relay.Difficulty
+	var err error
+	if in.Model == relay.AutoModelName {
+		// auto：按任务难度自动挑选模型与渠道。
+		var d relay.Difficulty
+		m, ps, d, err = s.eng.PickAuto(in)
+		difficulty = &d
+	} else {
+		m, ps, err = s.eng.ResolveAll(in.Model)
+	}
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "模型不可用："+err.Error())
 		return
@@ -187,7 +214,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		if err != nil {
 			sse.send(map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}})
 			if withMeta {
-				sse.send(relayMeta(m.Name, usedProvider))
+				sse.send(relayMeta(m.Name, requested, usedProvider, difficulty))
 			}
 			sse.done()
 			s.logUsage(store.UsageLog{
@@ -254,6 +281,14 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 	}
 	if withMeta {
 		resp["provider"] = usedProvider.Name
+		if requested != m.Name {
+			resp["requested"] = requested
+		}
+		if difficulty != nil {
+			resp["difficulty"] = map[string]any{
+				"score": difficulty.Score, "tier": difficulty.Tier, "reason": difficulty.Reason,
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
@@ -681,13 +716,21 @@ func providerNameByID(ps []store.Provider, id int64) string {
 }
 
 // relayMeta 是面板调试台专用的元信息分片，用于展示本次调用最终命中的上游。
-func relayMeta(model string, p store.Provider) map[string]any {
-	return map[string]any{
-		"object":   "relay.meta",
-		"model":    model,
-		"provider": p.Name,
+// requested 与 difficulty 仅在 auto 自动模型下有意义。
+func relayMeta(model, requested string, p store.Provider, d *relay.Difficulty) map[string]any {
+	out := map[string]any{
+		"object":      "relay.meta",
+		"model":       model,
+		"provider":    p.Name,
 		"provider_id": p.ID,
 	}
+	if requested != "" && requested != model {
+		out["requested"] = requested
+	}
+	if d != nil {
+		out["difficulty"] = map[string]any{"score": d.Score, "tier": d.Tier, "reason": d.Reason}
+	}
+	return out
 }
 
 func usageMap(u relay.Usage) map[string]any {
