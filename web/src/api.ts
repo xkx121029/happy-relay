@@ -272,8 +272,13 @@ export interface StreamHandlers {
   onToolCalls?: (calls: any[]) => void
   onError?: (message: string) => void
   onDone?: () => void
-  /** 面板调试台专用：本次调用最终命中的上游渠道 */
-  onMeta?: (meta: { model?: string; provider?: string }) => void
+  /** 面板调试台专用：本次调用最终命中的上游渠道与（auto 时的）难度评估 */
+  onMeta?: (meta: {
+    model?: string
+    provider?: string
+    requested?: string
+    difficulty?: { score: number; tier: string; reason: string }
+  }) => void
 }
 
 export const api = {
@@ -419,7 +424,12 @@ export async function streamChat(
         try {
           const chunk = JSON.parse(payload)
           if (chunk.object === 'relay.meta') {
-            handlers.onMeta?.({ model: chunk.model, provider: chunk.provider })
+            handlers.onMeta?.({
+              model: chunk.model,
+              provider: chunk.provider,
+              requested: chunk.requested,
+              difficulty: chunk.difficulty,
+            })
             continue
           }
           if (chunk.error) {

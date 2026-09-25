@@ -1,0 +1,1 @@
+{"name":"mock-mini","upstream_name":"mock-chat","capability":"chat","inputs":[{"provider_id":1,"upstream_name":"mock-chat"}],"config":{"tier":"light"},"enabled":true}

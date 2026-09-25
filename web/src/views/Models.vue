@@ -4,8 +4,10 @@ import Modal from '../components/Modal.vue'
 import TemplateEditor from '../components/TemplateEditor.vue'
 import {
   api,
-  type ModelConfig,
+  type CatalogModel,
   type Model,
+  type ModelConfig,
+  type ModelInput,
   type Provider,
   type TemplateSpec,
   type VideoPreset,
@@ -16,13 +18,14 @@ import { capLabel, kindLabel, prettyJSON } from '../utils'
 const loading = ref(true)
 const editing = ref(false)
 const saving = ref(false)
+const catalog = ref<CatalogModel[]>([])
 
 interface ModelForm {
   id: number
-  provider_ids: number[]
+  inputs: ModelInput[]
   route_strategy: string
+  tier: string
   name: string
-  upstream_name: string
   capability: string
   enabled: boolean
   remark: string
@@ -32,12 +35,13 @@ interface ModelForm {
 }
 
 function blank(): ModelForm {
+  const first = providers.value[0]
   return {
     id: 0,
-    provider_ids: providers.value[0] ? [providers.value[0].id] : [],
+    inputs: first ? [{ provider_id: first.id, upstream_name: '' }] : [],
     route_strategy: 'failover',
+    tier: '',
     name: '',
-    upstream_name: '',
     capability: 'chat',
     enabled: true,
     remark: '',
@@ -61,28 +65,35 @@ const capabilities = computed(
 
 const presets = computed<VideoPreset[]>(() => state.meta?.video_presets || [])
 
+const tierOptions = [
+  { value: '', label: '自动（按模型名推断）' },
+  { value: 'light', label: '轻量 · 短问答' },
+  { value: 'standard', label: '标准 · 日常任务' },
+  { value: 'pro', label: '强力 · 复杂推理' },
+]
+
 const boundProviders = computed<Provider[]>(() =>
-  form.provider_ids
-    .map((id) => providers.value.find((p) => p.id === id))
+  form.inputs
+    .map((i) => providers.value.find((p) => p.id === i.provider_id))
     .filter((p): p is Provider => !!p),
 )
 
-const availableProviders = computed(() =>
-  providers.value.filter((p) => !form.provider_ids.includes(p.id)),
-)
-
-const selectedKind = computed(() => boundProviders.value[0]?.kind || '')
 const hasTemplateProvider = computed(() => boundProviders.value.some((p) => p.kind === 'template'))
 const needChat = computed(() => hasTemplateProvider.value && form.capability === 'chat')
 const needImage = computed(() => hasTemplateProvider.value && form.capability === 'image')
 const needVideo = computed(() => form.capability === 'video')
 
+function catalogOf(providerID: number): CatalogModel[] {
+  return catalog.value.filter((c) => c.provider_id === providerID && c.enabled)
+}
+
 async function load() {
   loading.value = true
   try {
-    const [p, m] = await Promise.all([api.listProviders(), api.listModels()])
+    const [p, m, c] = await Promise.all([api.listProviders(), api.listModels(), api.listCatalog()])
     providers.value = p
     models.value = m
+    catalog.value = c
   } catch (e: any) {
     toast(e.message || '加载失败', 'error')
   } finally {
@@ -103,25 +114,28 @@ function ensureSpecs() {
 
 watch([hasTemplateProvider, () => form.capability], ensureSpecs)
 
-function providerName(id: number): string {
-  return providers.value.find((p) => p.id === id)?.name || `渠道 #${id}`
+function addInput() {
+  if (!providers.value.length) {
+    toast('请先在「渠道」里创建上游', 'error')
+    return
+  }
+  const used = new Set(form.inputs.map((i) => i.provider_id))
+  const next = providers.value.find((p) => !used.has(p.id)) || providers.value[0]
+  form.inputs.push({ provider_id: next.id, upstream_name: '' })
 }
 
-function addProvider(id: number) {
-  if (!form.provider_ids.includes(id)) form.provider_ids.push(id)
-}
-
-function removeProvider(id: number) {
-  form.provider_ids = form.provider_ids.filter((x) => x !== id)
-}
-
-function moveProvider(index: number, delta: number) {
+function moveInput(index: number, delta: number) {
   const target = index + delta
-  if (target < 0 || target >= form.provider_ids.length) return
-  const arr = form.provider_ids
+  if (target < 0 || target >= form.inputs.length) return
+  const arr = form.inputs
   const tmp = arr[index]
   arr[index] = arr[target]
   arr[target] = tmp
+}
+
+function onProviderChange(input: ModelInput) {
+  // 换了渠道，上游模型名一般也要换，交给用户重新选。
+  input.upstream_name = ''
 }
 
 function openCreate() {
@@ -136,18 +150,21 @@ function openCreate() {
 }
 
 function openEdit(m: Model) {
-  const ids =
-    m.provider_ids && m.provider_ids.length
-      ? [...m.provider_ids]
-      : m.provider_id
-        ? [m.provider_id]
-        : []
+  let inputs: ModelInput[] = []
+  if (m.inputs && m.inputs.length) {
+    inputs = m.inputs.map((i) => ({
+      provider_id: i.provider_id,
+      upstream_name: i.upstream_name || m.upstream_name,
+    }))
+  } else if (m.provider_ids && m.provider_ids.length) {
+    inputs = m.provider_ids.map((id) => ({ provider_id: id, upstream_name: m.upstream_name }))
+  }
   Object.assign(form, {
     id: m.id,
-    provider_ids: ids,
+    inputs,
     route_strategy: m.config?.route_strategy || 'failover',
+    tier: m.config?.tier || '',
     name: m.name,
-    upstream_name: m.upstream_name,
     capability: m.capability,
     enabled: m.enabled,
     remark: m.remark,
@@ -191,8 +208,11 @@ async function save() {
     toast('请填写对外模型名', 'error')
     return
   }
-  if (!form.provider_ids.length) {
-    toast('请至少选择一个渠道', 'error')
+  const inputs = form.inputs
+    .filter((i) => i.provider_id > 0 && i.upstream_name.trim())
+    .map((i) => ({ provider_id: i.provider_id, upstream_name: i.upstream_name.trim() }))
+  if (!inputs.length) {
+    toast('请至少配置一个上游（渠道 + 上游模型名）', 'error')
     return
   }
   const parsed = parseObject(form.defaultsText)
@@ -204,7 +224,8 @@ async function save() {
   const config: ModelConfig = {}
   if (form.system_prompt.trim()) config.system_prompt = form.system_prompt.trim()
   if (parsed.value && Object.keys(parsed.value).length) config.defaults = parsed.value
-  if (form.provider_ids.length > 1) config.route_strategy = form.route_strategy
+  if (inputs.length > 1) config.route_strategy = form.route_strategy
+  if (form.tier) config.tier = form.tier
   if (needChat.value && !isSpecEmpty(form.config.chat)) config.chat = form.config.chat!
   if (needImage.value && !isSpecEmpty(form.config.image)) config.image = form.config.image!
   if (needVideo.value && !isSpecEmpty(form.config.video)) config.video = form.config.video!
@@ -215,10 +236,9 @@ async function save() {
   try {
     await api.saveModel({
       id: form.id || undefined,
-      provider_id: form.provider_ids[0],
-      provider_ids: form.provider_ids,
+      inputs,
+      upstream_name: inputs[0].upstream_name,
       name: form.name.trim(),
-      upstream_name: form.upstream_name.trim() || form.name.trim(),
       capability: form.capability,
       config,
       enabled: form.enabled,
@@ -256,8 +276,23 @@ function capBadge(cap: string) {
   return { chat: 'brand', image: 'warn', video: 'ok', embedding: '' }[cap] || ''
 }
 
-function extraProviders(m: Model): number {
-  return Math.max(0, (m.provider_ids?.length || 0) - 1)
+function inputSummary(m: Model) {
+  const list = m.inputs?.length ? m.inputs : []
+  if (!list.length) return m.upstream_name || '—'
+  const first = list[0]
+  const name = providers.value.find((p) => p.id === first.provider_id)?.name || `#${first.provider_id}`
+  return `${name} · ${first.upstream_name}`
+}
+
+function inputCount(m: Model): number {
+  if (m.inputs?.length) return m.inputs.length
+  return m.provider_ids?.length || 1
+}
+
+function tierLabel(m: Model) {
+  const t = m.config?.tier
+  if (!t) return '自动'
+  return { light: '轻量', standard: '标准', pro: '强力' }[t] || t
 }
 </script>
 
@@ -266,7 +301,10 @@ function extraProviders(m: Model): number {
     <div class="page-head">
       <div>
         <h2>模型</h2>
-        <p>对外模型名与上游解耦，可同时绑定多个渠道：某个上游报错时自动切换到下一个。</p>
+        <p>
+          对外模型可以组合多个上游（每个上游是「渠道 + 模型名」），失败时自动切换；上游模型名可从
+          <router-link to="/catalog">模型库</router-link> 里挑。
+        </p>
       </div>
       <div class="row">
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
@@ -282,8 +320,8 @@ function extraProviders(m: Model): number {
           <tr>
             <th>对外模型名</th>
             <th>能力</th>
-            <th>渠道</th>
-            <th>上游模型名</th>
+            <th>档位</th>
+            <th>上游</th>
             <th>状态</th>
             <th style="text-align: right">操作</th>
           </tr>
@@ -295,18 +333,13 @@ function extraProviders(m: Model): number {
               <div v-if="m.remark" class="muted" style="font-size: 12px">{{ m.remark }}</div>
             </td>
             <td><span class="badge" :class="capBadge(m.capability)">{{ capLabel(m.capability) }}</span></td>
+            <td><span class="badge">{{ tierLabel(m) }}</span></td>
             <td>
-              <div class="dim">
-                {{ m.provider_name || '—' }}
-                <span v-if="extraProviders(m)" class="badge brand" style="margin-left: 4px">
-                  +{{ extraProviders(m) }}
-                </span>
-              </div>
-              <div v-if="extraProviders(m) && m.config?.route_strategy" class="muted" style="font-size: 11.5px">
-                {{ m.config.route_strategy === 'round_robin' ? '轮询' : m.config.route_strategy === 'random' ? '随机' : '主备' }}
+              <div class="dim clamp-1">{{ inputSummary(m) }}</div>
+              <div v-if="inputCount(m) > 1" class="muted" style="font-size: 11.5px">
+                共 {{ inputCount(m) }} 个上游，按顺序自动切换
               </div>
             </td>
-            <td class="mono dim clamp-1">{{ m.upstream_name }}</td>
             <td>
               <span class="badge" :class="m.enabled ? 'ok' : ''">
                 <span class="dot" />{{ m.enabled ? '启用' : '停用' }}
@@ -327,7 +360,7 @@ function extraProviders(m: Model): number {
 
     <div v-else class="card empty">
       <div class="big">还没有模型</div>
-      <div>模型决定对外暴露的名字与能力，客户端只能调用这里启用过的模型。</div>
+      <div>对外模型决定客户端能调用什么；上游模型名可以从「模型库」里挑。</div>
       <div style="margin-top: 16px"><button class="btn btn-primary" @click="openCreate">新建模型</button></div>
     </div>
 
@@ -335,7 +368,7 @@ function extraProviders(m: Model): number {
       v-if="editing"
       wide
       :title="form.id ? '编辑模型' : '新建模型'"
-      subtitle="默认参数会合并进上游请求体，客户端显式传入的同名参数优先。"
+      subtitle="可以配置多个上游，按顺序尝试，失败自动切换。"
       @close="editing = false"
     >
       <div class="grid cols-2" style="gap: 0 18px">
@@ -344,63 +377,74 @@ function extraProviders(m: Model): number {
           <input v-model="form.name" class="input code" placeholder="gpt-4o-mini" />
         </div>
         <div class="field">
-          <label>上游模型名</label>
-          <input v-model="form.upstream_name" class="input code" placeholder="留空则与对外名一致" />
-        </div>
-        <div class="field">
           <label>能力</label>
           <select v-model="form.capability" class="select">
             <option v-for="c in capabilities" :key="c.value" :value="c.value">{{ c.label }}</option>
           </select>
           <div class="hint">{{ capabilities.find((c) => c.value === form.capability)?.endpoint }}</div>
         </div>
+      </div>
+
+      <div class="field">
+        <label>上游列表（按顺序尝试，失败自动切换）</label>
+        <div
+          v-for="(inp, i) in form.inputs"
+          :key="i"
+          class="row"
+          style="align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: nowrap"
+        >
+          <span class="badge brand">{{ i + 1 }}</span>
+          <select
+            v-model.number="inp.provider_id"
+            class="select"
+            style="flex: 1; min-width: 120px"
+            @change="onProviderChange(inp)"
+          >
+            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <input
+            v-model="inp.upstream_name"
+            class="input code"
+            style="flex: 1.4; min-width: 140px"
+            :list="`cat-${i}`"
+            placeholder="上游模型名（可从模型库选）"
+          />
+          <datalist :id="`cat-${i}`">
+            <option v-for="c in catalogOf(inp.provider_id)" :key="c.id" :value="c.model_id" />
+          </datalist>
+          <button class="btn btn-sm btn-ghost" :disabled="i === 0" @click="moveInput(i, -1)">上移</button>
+          <button
+            class="btn btn-sm btn-ghost"
+            :disabled="i === form.inputs.length - 1"
+            @click="moveInput(i, 1)"
+          >
+            下移
+          </button>
+          <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="form.inputs.splice(i, 1)">
+            移除
+          </button>
+        </div>
+        <div v-if="!form.inputs.length" class="hint">还没有上游，请点击下面的按钮添加。</div>
+        <button class="btn btn-sm" @click="addInput">+ 添加上游</button>
+        <div class="hint">
+          下拉里带出的是模型库里该渠道探测到的模型；也可以直接手填。同一个模型在不同渠道上的上游名可以不同。
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="gap: 0 18px">
         <div class="field">
           <label>自动切换策略</label>
-          <select v-model="form.route_strategy" class="select" :disabled="form.provider_ids.length < 2">
+          <select v-model="form.route_strategy" class="select" :disabled="form.inputs.length < 2">
             <option value="failover">主备（按顺序，失败切换）</option>
             <option value="round_robin">轮询（依次轮流使用）</option>
             <option value="random">随机</option>
           </select>
-          <div class="hint">仅在绑定多个渠道时生效。</div>
         </div>
-      </div>
-
-      <div class="field">
-        <label>绑定渠道（按顺序，第一个为默认）</label>
-        <div
-          v-for="(p, i) in boundProviders"
-          :key="p.id"
-          class="list-row"
-          style="align-items: center; margin-bottom: 6px"
-        >
-          <span class="badge brand">{{ i + 1 }}</span>
-          <span style="flex: 1">
-            {{ p.name }}
-            <span class="muted" style="font-size: 12px">（{{ kindLabel(p.kind) }}）</span>
-          </span>
-          <button class="btn btn-sm btn-ghost" :disabled="i === 0" @click="moveProvider(i, -1)">上移</button>
-          <button
-            class="btn btn-sm btn-ghost"
-            :disabled="i === boundProviders.length - 1"
-            @click="moveProvider(i, 1)"
-          >
-            下移
-          </button>
-          <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="removeProvider(p.id)">
-            移除
-          </button>
-        </div>
-        <div v-if="!boundProviders.length" class="hint">尚未选择渠道，请至少添加一个。</div>
-        <div v-if="availableProviders.length" style="margin-top: 10px">
-          <div class="field-label">可添加的渠道</div>
-          <div class="chips">
-            <span v-for="p in availableProviders" :key="p.id" class="chip" @click="addProvider(p.id)">
-              + {{ p.name }}
-            </span>
-          </div>
-        </div>
-        <div v-if="form.provider_ids.length > 1" class="hint">
-          调用失败时会按上述顺序自动切换到下一个渠道；同一渠道内的多个入口与密钥也会依次重试。
+        <div class="field">
+          <label>档位（供 auto 自动模型挑选）</label>
+          <select v-model="form.tier" class="select">
+            <option v-for="t in tierOptions" :key="t.value" :value="t.value">{{ t.label }}</option>
+          </select>
         </div>
       </div>
 

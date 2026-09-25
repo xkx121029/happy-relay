@@ -10,6 +10,10 @@ interface ChatMsg {
   reasoning?: string
   /** 本次回复实际命中的上游渠道 */
   provider?: string
+  /** auto 模式下实际选中的模型 */
+  routedModel?: string
+  /** auto 模式下的难度评估 */
+  difficulty?: { score: number; tier: string; reason: string }
 }
 
 const loading = ref(true)
@@ -65,6 +69,19 @@ const capSkills = computed(() =>
 )
 
 const selModelInfo = computed(() => capModels.value.find((m) => m.name === selModel.value))
+
+// auto 是服务端内置的自动模型：按任务难度挑选合适的文本模型。
+const modelOptions = computed(() => {
+  const opts = capModels.value.map((m) => ({ name: m.name, label: m.name }))
+  if (capability.value === 'chat' && capModels.value.length) {
+    opts.unshift({ name: 'auto', label: 'auto · 自动挑选' })
+  }
+  return opts
+})
+
+function tierLabel(tier: string) {
+  return { light: '轻量', standard: '标准', pro: '强力' }[tier] || tier
+}
 
 const currentSkill = computed<Skill | undefined>(() => skills.value.find((s) => s.slug === selSkill.value))
 
@@ -157,7 +174,10 @@ async function sendChat() {
       },
       onMeta: (meta) => {
         const m = msgs.value[idx]
-        if (m && meta.provider) m.provider = meta.provider
+        if (!m) return
+        if (meta.provider) m.provider = meta.provider
+        if (meta.model && meta.model !== selModel.value) m.routedModel = meta.model
+        if (meta.difficulty) m.difficulty = meta.difficulty
       },
       onDone: () => {
         streaming.value = false
@@ -318,13 +338,14 @@ async function run() {
         <div class="field">
           <label>模型</label>
           <select v-model="selModel" class="select">
-            <option v-if="!capModels.length" value="">（无可用{{ capLabel(capability) }}模型）</option>
-            <option v-for="m in capModels" :key="m.id" :value="m.name">{{ m.name }}</option>
+            <option v-if="!modelOptions.length" value="">（无可用{{ capLabel(capability) }}模型）</option>
+            <option v-for="m in modelOptions" :key="m.name" :value="m.name">{{ m.label }}</option>
           </select>
-          <div v-if="capModels.length" class="hint">
+          <div v-if="selModel === 'auto'" class="hint">按任务难度自动挑选已启用的文本模型。</div>
+          <div v-else-if="modelOptions.length" class="hint">
             {{ selModelInfo?.provider_name || '—' }}
-            <span v-if="(selModelInfo?.provider_ids?.length || 0) > 1">
-              · 共 {{ selModelInfo?.provider_ids?.length }} 个渠道，失败时自动切换
+            <span v-if="(selModelInfo?.inputs?.length || 0) > 1">
+              · 共 {{ selModelInfo?.inputs?.length }} 个上游，失败时自动切换
             </span>
           </div>
         </div>
@@ -416,7 +437,15 @@ async function run() {
                     v-if="streaming && i === msgs.length - 1 && m.role === 'assistant'"
                     class="typing"
                   />
-                  <div v-if="m.provider" class="msg-provider">上游渠道：{{ m.provider }}</div>
+                  <div v-if="m.provider || m.routedModel" class="msg-provider">
+                    <span v-if="m.provider">上游渠道：{{ m.provider }}</span>
+                    <span v-if="m.routedModel"> · 自动选用：{{ m.routedModel }}</span>
+                    <span v-if="m.difficulty">
+                      （难度 {{ m.difficulty.score }} · {{ tierLabel(m.difficulty.tier) }}：{{
+                        m.difficulty.reason
+                      }}）
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
