@@ -83,7 +83,7 @@ func (s *Server) handleLegacyCompletion(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKey, in *relay.ChatInput) {
 	start := time.Now()
-	m, p, err := s.eng.Resolve(in.Model)
+	m, ps, err := s.eng.ResolveAll(in.Model)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "模型不可用："+err.Error())
 		return
@@ -105,7 +105,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		id := "chatcmpl-" + shortID()
 		first := true
 		var contentLen, reasoningLen int
-		out, usedProvider, err := s.eng.Chat(r.Context(), m, p, in, func(d relay.StreamDelta) error {
+		out, usedProvider, err := s.eng.Chat(r.Context(), m, ps, in, func(d relay.StreamDelta) error {
 			chunk := map[string]any{
 				"id": id, "object": "chat.completion.chunk", "created": created, "model": m.Name,
 			}
@@ -147,7 +147,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 			sse.send(map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}})
 			sse.done()
 			s.logUsage(store.UsageLog{
-				Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, p),
+				Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 				APIKeyName: key.Name, Status: 502, Stream: true, LatencyMS: latency,
 				Error: err.Error(), RequestBody: requestBody,
 			})
@@ -166,7 +166,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 			usage = out.Usage
 		}
 		s.logUsage(store.UsageLog{
-			Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, p),
+			Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 			APIKeyName: key.Name, Status: 200, Stream: true, LatencyMS: latency,
 			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
 			RequestBody:     requestBody,
@@ -175,11 +175,11 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 		return
 	}
 
-	out, usedProvider, err := s.eng.Chat(r.Context(), m, p, in, nil)
+	out, usedProvider, err := s.eng.Chat(r.Context(), m, ps, in, nil)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		s.logUsage(store.UsageLog{
-			Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, p),
+			Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 			APIKeyName: key.Name, Status: 502, LatencyMS: latency, Error: err.Error(),
 			RequestBody: requestBody,
 		})
@@ -207,7 +207,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 	}
 	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
-		Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, p),
+		Capability: store.CapChat, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 		APIKeyName: key.Name, Status: 200, LatencyMS: latency,
 		PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens,
 		RequestBody: requestBody, ResponsePreview: truncateStr(out.Content, 2000),

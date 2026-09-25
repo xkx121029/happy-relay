@@ -191,7 +191,7 @@ func (s *Server) handleConnectorGenerate(w http.ResponseWriter, r *http.Request)
 
 // callSystemAI 通过中转引擎调用系统级模型。
 func (s *Server) callSystemAI(ctx context.Context, model, systemPrompt, userPrompt string) (*relay.ChatOutput, string, error) {
-	m, p, err := s.eng.Resolve(model)
+	m, ps, err := s.eng.ResolveAll(model)
 	if err != nil {
 		return nil, "", err
 	}
@@ -204,7 +204,7 @@ func (s *Server) callSystemAI(ctx context.Context, model, systemPrompt, userProm
 		Options: map[string]any{"temperature": 0.1},
 		Raw:     map[string]any{},
 	}
-	out, provider, err := s.eng.Chat(ctx, m, p, in, nil)
+	out, provider, err := s.eng.Chat(ctx, m, ps, in, nil)
 	if err != nil {
 		return nil, provider.Name, err
 	}
