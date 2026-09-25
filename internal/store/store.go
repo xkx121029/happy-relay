@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS models (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id   INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
   provider_ids  TEXT    NOT NULL DEFAULT '[]',
+  inputs        TEXT    NOT NULL DEFAULT '[]',
   name          TEXT    NOT NULL UNIQUE,
   upstream_name TEXT    NOT NULL,
   capability    TEXT    NOT NULL,
@@ -138,6 +139,21 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_created ON usage_logs(created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_video_tasks_created ON video_tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 
+CREATE TABLE IF NOT EXISTS catalog_models (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id    TEXT    NOT NULL,
+  capability  TEXT    NOT NULL DEFAULT 'chat',
+  source      TEXT    NOT NULL DEFAULT 'probe',
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  remark      TEXT    NOT NULL DEFAULT '',
+  created_at  TEXT    NOT NULL,
+  updated_at  TEXT    NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_provider_model ON catalog_models(provider_id, model_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_provider ON catalog_models(provider_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -148,8 +164,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
-	// 老库升级：models 表补充 provider_ids 列，用于「一个模型聚合多个上游」。
+	// 老库升级：models 表补充 provider_ids / inputs 列，用于「一个模型聚合多个上游」。
 	if err := s.addColumnIfMissing("models", "provider_ids", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("models", "inputs", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
 	return s.seedBuiltinSkills()

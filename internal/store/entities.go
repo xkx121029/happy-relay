@@ -274,6 +274,9 @@ type ModelConfig struct {
 	// RouteStrategy 决定一个对外模型绑定多个渠道时的调度方式：
 	// failover（默认，按绑定顺序逐个尝试）| round_robin | random
 	RouteStrategy string `json:"route_strategy,omitempty"`
+	// Tier 是模型档位，供 auto 自动路由按任务难度挑选：light | standard | pro。
+	// 留空时按上游模型名启发式推断。
+	Tier string `json:"tier,omitempty"`
 	// 以下仅在渠道类型为 template，或能力为 video 时生效
 	Chat       *TemplateSpec `json:"chat,omitempty"`
 	Image      *TemplateSpec `json:"image,omitempty"`
@@ -281,23 +284,62 @@ type ModelConfig struct {
 	VideoQuery *TemplateSpec `json:"video_query,omitempty"`
 }
 
-// Model 是对外暴露的一个模型名，可聚合多个上游渠道。
-// ProviderIDs 为绑定的渠道列表（有序，首个为默认），ProviderID 冗余保存首个，
-// 既兼容旧数据，也维持与 providers 的外键约束。
+// 模型档位：auto 自动模型会按任务难度在对应档位里挑选。
+const (
+	TierLight    = "light"
+	TierStandard = "standard"
+	TierPro      = "pro"
+)
+
+// ModelInput 是模型的一个上游输入：某渠道下的某个具体上游模型。
+// 一个对外模型可以配置多个输入，按顺序尝试，失败自动切换。
+type ModelInput struct {
+	ProviderID   int64  `json:"provider_id"`
+	UpstreamName string `json:"upstream_name"`
+}
+
+// Model 是对外暴露的一个模型名，可聚合多个渠道与上游模型。
+// Inputs 为输入列表（有序，首个为默认）；ProviderIDs / ProviderID 为冗余字段，
+// 由 Inputs 推导，用于兼容旧数据与维持外键约束。
 type Model struct {
-	ID           int64       `json:"id"`
-	ProviderID   int64       `json:"provider_id"`
-	ProviderIDs  []int64     `json:"provider_ids"`
-	ProviderName string      `json:"provider_name,omitempty"`
-	ProviderKind string      `json:"provider_kind,omitempty"`
-	Name         string      `json:"name"`
-	UpstreamName string      `json:"upstream_name"`
-	Capability   string      `json:"capability"`
-	Config       ModelConfig `json:"config"`
-	Enabled      bool        `json:"enabled"`
-	Remark       string      `json:"remark"`
-	CreatedAt    string      `json:"created_at"`
-	UpdatedAt    string      `json:"updated_at"`
+	ID           int64        `json:"id"`
+	ProviderID   int64        `json:"provider_id"`
+	ProviderIDs  []int64      `json:"provider_ids"`
+	Inputs       []ModelInput `json:"inputs"`
+	ProviderName string       `json:"provider_name,omitempty"`
+	ProviderKind string       `json:"provider_kind,omitempty"`
+	Name         string       `json:"name"`
+	UpstreamName string       `json:"upstream_name"`
+	Capability   string       `json:"capability"`
+	Config       ModelConfig  `json:"config"`
+	Enabled      bool         `json:"enabled"`
+	Remark       string       `json:"remark"`
+	CreatedAt    string       `json:"created_at"`
+	UpdatedAt    string       `json:"updated_at"`
+}
+
+// AllInputs 返回模型配置的全部上游输入（有序去重）。
+// 旧数据没有 inputs，用 provider_ids 与统一的 upstream_name 推导。
+func (m Model) AllInputs() []ModelInput {
+	out := make([]ModelInput, 0, len(m.Inputs))
+	seen := map[int64]bool{}
+	for _, in := range m.Inputs {
+		if in.ProviderID <= 0 || seen[in.ProviderID] {
+			continue
+		}
+		seen[in.ProviderID] = true
+		name := strings.TrimSpace(in.UpstreamName)
+		if name == "" {
+			name = m.UpstreamName
+		}
+		out = append(out, ModelInput{ProviderID: in.ProviderID, UpstreamName: name})
+	}
+	if len(out) == 0 {
+		for _, id := range m.AllProviderIDs() {
+			out = append(out, ModelInput{ProviderID: id, UpstreamName: m.UpstreamName})
+		}
+	}
+	return out
 }
 
 // AllProviderIDs 返回模型绑定的全部渠道 ID（有序去重）。旧数据只有 provider_id 时回退到单渠道。
@@ -309,8 +351,43 @@ func (m Model) AllProviderIDs() []int64 {
 	return ids
 }
 
+// UpstreamNameFor 返回指定渠道对应的上游模型名，找不到时回退到默认值。
+func (m Model) UpstreamNameFor(providerID int64) string {
+	for _, in := range m.AllInputs() {
+		if in.ProviderID == providerID {
+			return in.UpstreamName
+		}
+	}
+	return m.UpstreamName
+}
+
+// EffectiveTier 返回模型档位：优先取配置值，否则按上游模型名启发式推断。
+func (m Model) EffectiveTier() string {
+	switch m.Config.Tier {
+	case TierLight, TierStandard, TierPro:
+		return m.Config.Tier
+	}
+	return GuessTier(m.UpstreamName)
+}
+
+// GuessTier 按模型名里的常见标记推断档位，供 auto 路由与面板默认值使用。
+func GuessTier(name string) string {
+	n := strings.ToLower(name)
+	for _, kw := range []string{"mini", "small", "flash", "lite", "nano", "tiny", "8b", "7b", "haiku", "air"} {
+		if strings.Contains(n, kw) {
+			return TierLight
+		}
+	}
+	for _, kw := range []string{"pro", "max", "ultra", "opus", "large", "70b", "72b", "405b", "sonnet", "reasoner", "thinking"} {
+		if strings.Contains(n, kw) {
+			return TierPro
+		}
+	}
+	return TierStandard
+}
+
 const modelSelect = `SELECT m.id,m.provider_id,COALESCE(p.name,''),COALESCE(p.kind,''),m.name,
-	m.upstream_name,m.capability,m.config,m.enabled,m.remark,m.created_at,m.updated_at,m.provider_ids
+	m.upstream_name,m.capability,m.config,m.enabled,m.remark,m.created_at,m.updated_at,m.provider_ids,m.inputs
 	FROM models m LEFT JOIN providers p ON p.id=m.provider_id`
 
 func (s *Store) ListModels() ([]Model, error) {
@@ -349,17 +426,35 @@ func (s *Store) ResolveModel(name string) (Model, error) {
 
 func scanModel(sc scanner) (Model, error) {
 	var m Model
-	var cfg, providerIDs string
+	var cfg, providerIDs, inputs string
 	var enabled int
 	if err := sc.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderKind, &m.Name,
 		&m.UpstreamName, &m.Capability, &cfg, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt,
-		&providerIDs); err != nil {
+		&providerIDs, &inputs); err != nil {
 		return Model{}, err
 	}
 	m.Config = unmarshal(cfg, ModelConfig{})
 	m.ProviderIDs = cleanIDs(unmarshal(providerIDs, []int64{}))
+	m.Inputs = cleanInputs(unmarshal(inputs, []ModelInput{}))
 	m.Enabled = enabled == 1
 	return m, nil
+}
+
+// cleanInputs 去掉无效项并按渠道去重，保持顺序。
+func cleanInputs(in []ModelInput) []ModelInput {
+	out := make([]ModelInput, 0, len(in))
+	seen := map[int64]bool{}
+	for _, v := range in {
+		if v.ProviderID <= 0 || seen[v.ProviderID] {
+			continue
+		}
+		seen[v.ProviderID] = true
+		out = append(out, ModelInput{
+			ProviderID:   v.ProviderID,
+			UpstreamName: strings.TrimSpace(v.UpstreamName),
+		})
+	}
+	return out
 }
 
 func (s *Store) SaveModel(m Model) (Model, error) {
@@ -375,38 +470,43 @@ func (s *Store) SaveModel(m Model) (Model, error) {
 	default:
 		m.Capability = CapChat
 	}
-	ids := cleanIDs(m.ProviderIDs)
-	if len(ids) == 0 && m.ProviderID > 0 {
-		ids = []int64{m.ProviderID}
+	inputs := m.AllInputs()
+	if len(inputs) == 0 {
+		return m, errors.New("请至少选择一个上游")
 	}
-	if len(ids) == 0 {
-		return m, errors.New("请至少选择一个渠道")
-	}
-	for _, id := range ids {
-		if _, err := s.GetProvider(id); err != nil {
+	for _, in := range inputs {
+		if _, err := s.GetProvider(in.ProviderID); err != nil {
 			return m, errors.New("绑定的渠道不存在，请重新选择")
 		}
 	}
+	ids := make([]int64, 0, len(inputs))
+	for _, in := range inputs {
+		ids = append(ids, in.ProviderID)
+	}
+	m.Inputs = inputs
 	m.ProviderIDs = ids
 	// provider_id 冗余保存首个渠道，维持外键约束并兼容旧数据。
 	m.ProviderID = ids[0]
+	if strings.TrimSpace(m.UpstreamName) == "" {
+		m.UpstreamName = inputs[0].UpstreamName
+	}
 	ts := now()
 	if m.ID == 0 {
 		res, err := s.db.Exec(`INSERT INTO models
-			(provider_id,provider_ids,name,upstream_name,capability,config,enabled,remark,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			m.ProviderID, marshal(m.ProviderIDs), m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
-			boolInt(m.Enabled), m.Remark, ts, ts)
+			(provider_id,provider_ids,inputs,name,upstream_name,capability,config,enabled,remark,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			m.ProviderID, marshal(m.ProviderIDs), marshal(m.Inputs), m.Name, m.UpstreamName,
+			m.Capability, marshal(m.Config), boolInt(m.Enabled), m.Remark, ts, ts)
 		if err != nil {
 			return m, err
 		}
 		m.ID, _ = res.LastInsertId()
 		m.CreatedAt, m.UpdatedAt = ts, ts
 	} else {
-		if _, err := s.db.Exec(`UPDATE models SET provider_id=?,provider_ids=?,name=?,upstream_name=?,
+		if _, err := s.db.Exec(`UPDATE models SET provider_id=?,provider_ids=?,inputs=?,name=?,upstream_name=?,
 			capability=?,config=?,enabled=?,remark=?,updated_at=? WHERE id=?`,
-			m.ProviderID, marshal(m.ProviderIDs), m.Name, m.UpstreamName, m.Capability, marshal(m.Config),
-			boolInt(m.Enabled), m.Remark, ts, m.ID); err != nil {
+			m.ProviderID, marshal(m.ProviderIDs), marshal(m.Inputs), m.Name, m.UpstreamName,
+			m.Capability, marshal(m.Config), boolInt(m.Enabled), m.Remark, ts, m.ID); err != nil {
 			return m, err
 		}
 		m.UpdatedAt = ts
