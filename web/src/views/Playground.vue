@@ -279,8 +279,61 @@ async function genImage() {
 
 // ---------- 视频 ----------
 
-const videoDuration = ref(5)
-const videoDurations = [5, 8, 10]
+// 视频参数：Agnes 等上游用 mode 区分文生视频 / 首尾帧 / 参考素材三种生成方式。
+const videoMode = ref('text')
+const videoModes = [
+  { value: 'text', label: '文生视频' },
+  { value: 'keyframe', label: '首尾帧' },
+  { value: 'reference', label: '参考素材' },
+]
+const videoDuration = ref('5')
+const videoDurations = ['4', '5', '6', '8', '10', '12']
+const videoRatio = ref('16:9')
+const videoRatios = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
+const videoFirstFrame = ref('')
+const videoLastFrame = ref('')
+const videoRefImages = ref<string[]>([])
+const videoRefAudios = ref<string[]>([])
+
+function videoRefList(kind: 'images' | 'audios') {
+  return kind === 'images' ? videoRefImages : videoRefAudios
+}
+
+function addVideoRef(kind: 'images' | 'audios') {
+  const list = videoRefList(kind)
+  const limit = kind === 'images' ? 8 : 4
+  if (list.value.length >= limit) {
+    toast(`最多 ${limit} 个${kind === 'images' ? '参考图' : '参考音频'}`, 'error')
+    return
+  }
+  list.value.push('')
+}
+
+function updateVideoRef(kind: 'images' | 'audios', index: number, e: Event) {
+  videoRefList(kind).value[index] = (e.target as HTMLInputElement).value
+}
+
+function removeVideoRef(kind: 'images' | 'audios', index: number) {
+  videoRefList(kind).value.splice(index, 1)
+}
+
+// pickVideoImage 把本地图片读成 data URI；音频体积大，建议直接填 URL。
+async function pickVideoImage(index: number, e: Event) {
+  const el = e.target as HTMLInputElement
+  const file = el.files?.[0]
+  if (!file) return
+  if (file.size > 4 * 1024 * 1024) {
+    toast('参考图不能超过 4MB，建议改用图片 URL', 'error')
+    el.value = ''
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    videoRefImages.value[index] = String(reader.result || '')
+  }
+  reader.readAsDataURL(file)
+  el.value = ''
+}
 
 function stopPolling() {
   if (videoTimer !== null) {
@@ -318,10 +371,22 @@ async function genVideo() {
   }
   const body: any = {
     model: selModel.value,
-    duration: videoDuration.value,
+    mode: videoMode.value,
+    duration: Number(videoDuration.value) || 0,
     ...skillBody(),
   }
   if (prompt) body.prompt = prompt
+  if (videoRatio.value) body.aspect_ratio = videoRatio.value
+  if (videoMode.value === 'keyframe') {
+    if (videoFirstFrame.value.trim()) body.first_frame = videoFirstFrame.value.trim()
+    if (videoLastFrame.value.trim()) body.last_frame = videoLastFrame.value.trim()
+  }
+  if (videoMode.value === 'reference') {
+    const refs = videoRefImages.value.map((s) => s.trim()).filter(Boolean)
+    if (refs.length) body.images = refs
+    const audios = videoRefAudios.value.map((s) => s.trim()).filter(Boolean)
+    if (audios.length) body.audios = audios
+  }
   videoBusy.value = true
   videoTask.value = null
   stopPolling()
@@ -611,8 +676,98 @@ async function run() {
           <div class="card" style="margin-bottom: 16px">
             <div class="field" style="margin-bottom: 10px">
               <label>视频提示词</label>
-              <textarea v-model="input" class="textarea" rows="2" placeholder="例如：海边日落，镜头缓慢推进" />
+              <textarea
+                v-model="input"
+                class="textarea"
+                rows="2"
+                placeholder="例如：雨后的未来城市街道，霓虹灯倒映在地面，电影级运镜"
+              />
             </div>
+
+            <div class="grid cols-3" style="gap: 0 14px">
+              <div class="field">
+                <label>生成方式</label>
+                <select v-model="videoMode" class="select">
+                  <option v-for="m in videoModes" :key="m.value" :value="m.value">{{ m.label }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>时长</label>
+                <select v-model="videoDuration" class="select">
+                  <option v-for="d in videoDurations" :key="d" :value="d">{{ d }} 秒</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>画幅</label>
+                <select v-model="videoRatio" class="select">
+                  <option v-for="r in videoRatios" :key="r" :value="r">{{ r }}</option>
+                </select>
+              </div>
+            </div>
+
+            <template v-if="videoMode === 'keyframe'">
+              <div class="grid cols-2" style="gap: 0 14px">
+                <div class="field">
+                  <label>首帧图 URL</label>
+                  <input
+                    v-model="videoFirstFrame"
+                    class="input code"
+                    placeholder="https://example.com/first.png"
+                  />
+                </div>
+                <div class="field">
+                  <label>尾帧图 URL（可留空）</label>
+                  <input
+                    v-model="videoLastFrame"
+                    class="input code"
+                    placeholder="https://example.com/last.png"
+                  />
+                </div>
+              </div>
+              <div class="hint" style="margin-bottom: 12px">首帧与尾帧至少填写一个。</div>
+            </template>
+
+            <template v-if="videoMode === 'reference'">
+              <div class="field">
+                <label>参考图（Agnes Video 2.5 Flash 最多 5 张）</label>
+                <div v-for="(_, i) in videoRefImages" :key="'vimg' + i" class="list-row">
+                  <input
+                    :value="videoRefImages[i]"
+                    class="input code"
+                    placeholder="https://example.com/ref.png"
+                    @input="updateVideoRef('images', i, $event)"
+                  />
+                  <label class="btn btn-sm btn-ghost" style="cursor: pointer; white-space: nowrap">
+                    上传
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style="display: none"
+                      @change="pickVideoImage(i, $event)"
+                    />
+                  </label>
+                  <button class="btn btn-sm btn-ghost" @click="removeVideoRef('images', i)">移除</button>
+                </div>
+                <button class="btn btn-sm" @click="addVideoRef('images')">+ 添加参考图</button>
+              </div>
+              <div class="field">
+                <label>参考音频（Agnes Video 2.5 Flash 最多 3 段）</label>
+                <div v-for="(_, i) in videoRefAudios" :key="'vaud' + i" class="list-row">
+                  <input
+                    :value="videoRefAudios[i]"
+                    class="input code"
+                    placeholder="https://example.com/ref.mp3"
+                    @input="updateVideoRef('audios', i, $event)"
+                  />
+                  <button class="btn btn-sm btn-ghost" @click="removeVideoRef('audios', i)">移除</button>
+                </div>
+                <button class="btn btn-sm" @click="addVideoRef('audios')">+ 添加参考音频</button>
+              </div>
+              <div class="hint" style="margin-bottom: 12px">
+                提示词里可用 &lt;Picture 1&gt;、&lt;Audio 1&gt; 指代对应素材；参考音频仅部分上游支持。
+              </div>
+            </template>
+
             <div class="row">
               <div class="spacer" />
               <button class="btn btn-primary btn-sm" :disabled="videoBusy" @click="genVideo">
