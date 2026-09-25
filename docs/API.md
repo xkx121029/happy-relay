@@ -250,6 +250,32 @@ POST /v1/videos
 
 `prompt` 与 `image` 至少填一个：只填 `prompt` 是文生视频，带 `image` 是图生视频。其余未知字段原样透传。
 
+需要更精细控制的上游（首尾帧、参考素材等），可以改用下面这组字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `mode` | 生成方式，如 Agnes 的 `text` / `keyframe` / `reference`，留空按 `text` 处理 |
+| `first_frame` / `last_frame` | 首帧、尾帧图片 URL（`image` 等同于 `first_frame`） |
+| `images` | 参考图 URL 数组 |
+| `audios` | 参考音频 URL 数组 |
+| `aspect_ratio` | 画幅比例，如 `16:9` |
+| `size` | 分辨率档位，如 `720P` |
+| `duration` / `seconds` | 时长，数字与字符串两种写法都接受 |
+
+这些字段最终如何下发由模型的「视频模板」决定，模板可用占位符见后文。
+
+**接入 Agnes Video 2.5 Flash**
+
+该模型有三处非标准约定，模型编辑页「视频预设」一键套用即可开箱兼容：
+
+| 约定 | 中转站里的做法 |
+| --- | --- |
+| 查询端点是根路径 `/agnesapi`，不在 `/v1` 下 | 模板路径写 `{{base_root}}/agnesapi`，或直接写绝对 URL |
+| `seconds` 必须是字符串 `"4"`–`"12"` | 模板里用 `{{duration_text}}`（`{{seconds}}` 同义） |
+| 不同模式只接受对应参数，传空值会报错 | 模板开启 `omit_empty`，空串 / 空数组 / `null` 一律不下发 |
+
+`size` 固定 `720P`、`reference` 模式参考图最多 5 张 / 音频最多 3 段，预设里都已按此配置。轮询频率可在「设置 → 视频轮询间隔」调整，官方建议 1–2 秒。
+
 响应：
 
 ```json
@@ -604,7 +630,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | `{{image}}` / `{{image_url}}` | 图片地址或 data URL |
 | `{{model}}` / `{{upstream_model}}` | 上游模型名 |
 | `{{key}}` | 当前渠道密钥 |
-| `{{size}}` / `{{n}}` / `{{duration}}` | 尺寸、张数、时长 |
+| `{{size}}` / `{{n}}` / `{{duration}}` | 尺寸、张数、时长（数字形式） |
+| `{{duration_text}}` / `{{seconds}}` | 时长的字符串形式，供要求字符串秒数的上游使用 |
+| `{{base_root}}` | 入口地址去掉 `/v1` 等版本后缀后的根地址 |
+| `{{mode}}` | 生成方式（如 `text` / `keyframe` / `reference`） |
+| `{{first_frame}}` / `{{last_frame}}` | 首帧、尾帧图片地址 |
+| `{{images}}` / `{{audios}}` | 参考图、参考音频的数组 |
+| `{{aspect_ratio}}` | 画幅比例 |
 | `{{task_id}}` | 上游视频任务 ID（仅查询模板） |
 
 `response` 是从上游响应里取值的 JSON 路径，支持 `data.outputs[0].url` 这样的写法：
@@ -623,7 +655,9 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 状态值会被统一归一化成 `queued` / `running` / `succeeded` / `failed`，常见别名（`processing`、`completed`、`done`、`error`…）已内置识别。
 
----
+**关于模板路径**：`path` 默认拼在渠道入口地址之后；若渲染结果以 `http://` 或 `https://` 开头，则视为绝对地址直接使用。配合 `{{base_root}}`，即可对接「创建与查询不在同一路径前缀」的上游。
+
+**关于 `omit_empty`**：模板设置 `"omit_empty": true` 后，渲染出的请求体会剔除值为空串、空数组与 `null` 的字段，适合「不同模式只接受对应参数、传空值会被判错」的上游。
 
 ### 对外秘钥 keys
 
