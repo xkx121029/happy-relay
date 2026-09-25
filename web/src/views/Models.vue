@@ -25,6 +25,7 @@ interface ModelForm {
   inputs: ModelInput[]
   route_strategy: string
   tier: string
+  image_mode: string
   name: string
   capability: string
   enabled: boolean
@@ -41,6 +42,7 @@ function blank(): ModelForm {
     inputs: first ? [{ provider_id: first.id, upstream_name: '' }] : [],
     route_strategy: 'failover',
     tier: '',
+    image_mode: '',
     name: '',
     capability: 'chat',
     enabled: true,
@@ -164,6 +166,7 @@ function openEdit(m: Model) {
     inputs,
     route_strategy: m.config?.route_strategy || 'failover',
     tier: m.config?.tier || '',
+    image_mode: m.config?.image_mode || '',
     name: m.name,
     capability: m.capability,
     enabled: m.enabled,
@@ -226,6 +229,7 @@ async function save() {
   if (parsed.value && Object.keys(parsed.value).length) config.defaults = parsed.value
   if (inputs.length > 1) config.route_strategy = form.route_strategy
   if (form.tier) config.tier = form.tier
+  if (form.capability === 'image' && form.image_mode) config.image_mode = form.image_mode
   if (needChat.value && !isSpecEmpty(form.config.chat)) config.chat = form.config.chat!
   if (needImage.value && !isSpecEmpty(form.config.image)) config.image = form.config.image!
   if (needVideo.value && !isSpecEmpty(form.config.video)) config.video = form.config.video!
@@ -431,7 +435,7 @@ function tierLabel(m: Model) {
         </div>
       </div>
 
-      <div class="grid cols-2" style="gap: 0 18px">
+      <div class="grid" :class="form.capability === 'image' ? 'cols-3' : 'cols-2'" style="gap: 0 14px">
         <div class="field">
           <label>自动切换策略</label>
           <select v-model="form.route_strategy" class="select" :disabled="form.inputs.length < 2">
@@ -445,6 +449,16 @@ function tierLabel(m: Model) {
           <select v-model="form.tier" class="select">
             <option v-for="t in tierOptions" :key="t.value" :value="t.value">{{ t.label }}</option>
           </select>
+        </div>
+        <div v-if="form.capability === 'image'" class="field">
+          <label>图片请求模式</label>
+          <select v-model="form.image_mode" class="select">
+            <option value="">标准（参数放顶层）</option>
+            <option value="extra_body">extra_body（Agnes 等）</option>
+          </select>
+          <div class="hint">
+            Agnes Image 2.1 Flash 要求 response_format 与参考图放在 extra_body 里，选这一项即可兼容。
+          </div>
         </div>
       </div>
 

@@ -196,8 +196,50 @@ function clearChat() {
 
 // ---------- 图片 ----------
 
-const imageSize = ref('1024x1024')
-const imageSizes = ['1024x1024', '1536x1024', '1024x1536', '512x512']
+// 图片参数：尺寸档位 + 宽高比（Agnes 等新模型用 1K/2K + ratio 表达），
+// 也可以切到「自定义」直接填 1024x1024 这类精确尺寸。
+const imageSizeMode = ref('2K')
+const imageSizeCustom = ref('1024x1024')
+const imageRatio = ref('1:1')
+const imageFormat = ref('') // 空表示不传，交给上游默认
+const imageRefs = ref<string[]>([])
+
+const sizePresets = ['1K', '2K', '3K', '4K']
+const ratios = ['1:1', '3:4', '4:3', '16:9', '9:16', '2:3', '3:2', '21:9']
+
+function activeSize(): string {
+  return imageSizeMode.value === 'custom' ? imageSizeCustom.value.trim() : imageSizeMode.value
+}
+
+function addImageRef() {
+  if (imageRefs.value.length >= 8) {
+    toast('最多 8 张参考图', 'error')
+    return
+  }
+  imageRefs.value.push('')
+}
+
+function updateRef(index: number, e: Event) {
+  imageRefs.value[index] = (e.target as HTMLInputElement).value
+}
+
+// pickImageRef 把本地图片读成 data URI，便于直接传给支持 data URI 的上游。
+async function pickImageRef(index: number, e: Event) {
+  const el = e.target as HTMLInputElement
+  const file = el.files?.[0]
+  if (!file) return
+  if (file.size > 4 * 1024 * 1024) {
+    toast('参考图不能超过 4MB，建议改用图片 URL', 'error')
+    el.value = ''
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    imageRefs.value[index] = String(reader.result || '')
+  }
+  reader.readAsDataURL(file)
+  el.value = ''
+}
 
 async function genImage() {
   if (!selModel.value) {
@@ -209,7 +251,14 @@ async function genImage() {
     toast('请输入图片提示词', 'error')
     return
   }
-  const body: any = { model: selModel.value, size: imageSize.value, ...skillBody() }
+  const body: any = { model: selModel.value, ...skillBody() }
+  const size = activeSize()
+  if (size) body.size = size
+  // 档位式尺寸才带宽高比；自定义精确尺寸时由尺寸本身决定比例。
+  if (imageSizeMode.value !== 'custom' && imageRatio.value) body.ratio = imageRatio.value
+  if (imageFormat.value) body.response_format = imageFormat.value
+  const refs = imageRefs.value.map((s) => s.trim()).filter(Boolean)
+  if (refs.length) body.image = refs
   if (prompt) body.prompt = prompt
   generating.value = true
   images.value = []
@@ -478,6 +527,57 @@ async function run() {
               <label>图片提示词</label>
               <textarea v-model="input" class="textarea" rows="2" placeholder="例如：一只戴墨镜的柴犬" />
             </div>
+
+            <div class="grid cols-3" style="gap: 0 14px">
+              <div class="field">
+                <label>尺寸</label>
+                <select v-model="imageSizeMode" class="select">
+                  <option v-for="s in sizePresets" :key="s" :value="s">{{ s }}（档位）</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>宽高比</label>
+                <select v-model="imageRatio" class="select" :disabled="imageSizeMode === 'custom'">
+                  <option v-for="r in ratios" :key="r" :value="r">{{ r }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>返回格式</label>
+                <select v-model="imageFormat" class="select">
+                  <option value="">上游默认</option>
+                  <option value="url">url</option>
+                  <option value="b64_json">b64_json</option>
+                </select>
+              </div>
+            </div>
+
+            <div v-if="imageSizeMode === 'custom'" class="field">
+              <label>精确尺寸</label>
+              <input v-model="imageSizeCustom" class="input code" placeholder="1024x1024" />
+            </div>
+
+            <div class="field">
+              <label>参考图（图生图 / 多图合成，可留空）</label>
+              <div v-for="(_, i) in imageRefs" :key="'ref' + i" class="list-row">
+                <input
+                  :value="imageRefs[i]"
+                  class="input code"
+                  placeholder="https://example.com/input.png"
+                  @input="updateRef(i, $event)"
+                />
+                <label class="btn btn-sm btn-ghost" style="cursor: pointer; white-space: nowrap">
+                  上传
+                  <input type="file" accept="image/*" style="display: none" @change="pickImageRef(i, $event)" />
+                </label>
+                <button class="btn btn-sm btn-ghost" @click="imageRefs.splice(i, 1)">移除</button>
+              </div>
+              <button class="btn btn-sm" @click="addImageRef">+ 添加参考图</button>
+              <div class="hint">
+                填公共可访问的图片 URL 最省事；本地图片会转成 data URI 一并提交，单张建议不超过 4MB。
+              </div>
+            </div>
+
             <div class="row">
               <div class="spacer" />
               <button class="btn btn-primary btn-sm" :disabled="generating" @click="genImage">
