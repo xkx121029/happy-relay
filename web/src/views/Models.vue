@@ -2,7 +2,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import Modal from '../components/Modal.vue'
 import TemplateEditor from '../components/TemplateEditor.vue'
-import { api, type ModelConfig, type Model, type TemplateSpec, type VideoPreset } from '../api'
+import {
+  api,
+  type ModelConfig,
+  type Model,
+  type Provider,
+  type TemplateSpec,
+  type VideoPreset,
+} from '../api'
 import { models, providers, state, toast } from '../store'
 import { capLabel, kindLabel, prettyJSON } from '../utils'
 
@@ -12,7 +19,8 @@ const saving = ref(false)
 
 interface ModelForm {
   id: number
-  provider_id: number
+  provider_ids: number[]
+  route_strategy: string
   name: string
   upstream_name: string
   capability: string
@@ -26,7 +34,8 @@ interface ModelForm {
 function blank(): ModelForm {
   return {
     id: 0,
-    provider_id: providers.value[0]?.id || 0,
+    provider_ids: providers.value[0] ? [providers.value[0].id] : [],
+    route_strategy: 'failover',
     name: '',
     upstream_name: '',
     capability: 'chat',
@@ -52,9 +61,20 @@ const capabilities = computed(
 
 const presets = computed<VideoPreset[]>(() => state.meta?.video_presets || [])
 
-const selectedKind = computed(() => providers.value.find((p) => p.id === form.provider_id)?.kind || '')
-const needChat = computed(() => selectedKind.value === 'template' && form.capability === 'chat')
-const needImage = computed(() => selectedKind.value === 'template' && form.capability === 'image')
+const boundProviders = computed<Provider[]>(() =>
+  form.provider_ids
+    .map((id) => providers.value.find((p) => p.id === id))
+    .filter((p): p is Provider => !!p),
+)
+
+const availableProviders = computed(() =>
+  providers.value.filter((p) => !form.provider_ids.includes(p.id)),
+)
+
+const selectedKind = computed(() => boundProviders.value[0]?.kind || '')
+const hasTemplateProvider = computed(() => boundProviders.value.some((p) => p.kind === 'template'))
+const needChat = computed(() => hasTemplateProvider.value && form.capability === 'chat')
+const needImage = computed(() => hasTemplateProvider.value && form.capability === 'image')
 const needVideo = computed(() => form.capability === 'video')
 
 async function load() {
@@ -73,40 +93,67 @@ async function load() {
 onMounted(load)
 
 function ensureSpecs() {
-  const kind = selectedKind.value
-  if (kind === 'template' && form.capability === 'chat' && !form.config.chat) form.config.chat = {}
-  if (kind === 'template' && form.capability === 'image' && !form.config.image) form.config.image = {}
+  if (hasTemplateProvider.value && form.capability === 'chat' && !form.config.chat) form.config.chat = {}
+  if (hasTemplateProvider.value && form.capability === 'image' && !form.config.image) form.config.image = {}
   if (form.capability === 'video') {
     if (!form.config.video) form.config.video = {}
     if (!form.config.video_query) form.config.video_query = {}
   }
 }
 
-watch([selectedKind, () => form.capability], ensureSpecs)
+watch([hasTemplateProvider, () => form.capability], ensureSpecs)
+
+function providerName(id: number): string {
+  return providers.value.find((p) => p.id === id)?.name || `渠道 #${id}`
+}
+
+function addProvider(id: number) {
+  if (!form.provider_ids.includes(id)) form.provider_ids.push(id)
+}
+
+function removeProvider(id: number) {
+  form.provider_ids = form.provider_ids.filter((x) => x !== id)
+}
+
+function moveProvider(index: number, delta: number) {
+  const target = index + delta
+  if (target < 0 || target >= form.provider_ids.length) return
+  const arr = form.provider_ids
+  const tmp = arr[index]
+  arr[index] = arr[target]
+  arr[target] = tmp
+}
 
 function openCreate() {
   if (!providers.value.length) {
     toast('请先在「渠道」里创建上游', 'error')
     return
   }
-  const fresh = blank()
-  Object.assign(form, fresh)
+  Object.assign(form, blank())
   form.config = { chat: {}, image: {}, video: {}, video_query: {} }
   ensureSpecs()
   editing.value = true
 }
 
 function openEdit(m: Model) {
+  const ids =
+    m.provider_ids && m.provider_ids.length
+      ? [...m.provider_ids]
+      : m.provider_id
+        ? [m.provider_id]
+        : []
   Object.assign(form, {
     id: m.id,
-    provider_id: m.provider_id,
+    provider_ids: ids,
+    route_strategy: m.config?.route_strategy || 'failover',
     name: m.name,
     upstream_name: m.upstream_name,
     capability: m.capability,
     enabled: m.enabled,
     remark: m.remark,
     system_prompt: m.config?.system_prompt || '',
-    defaultsText: m.config?.defaults && Object.keys(m.config.defaults).length ? prettyJSON(m.config.defaults) : '{}',
+    defaultsText:
+      m.config?.defaults && Object.keys(m.config.defaults).length ? prettyJSON(m.config.defaults) : '{}',
     config: {
       chat: m.config?.chat ? JSON.parse(JSON.stringify(m.config.chat)) : undefined,
       image: m.config?.image ? JSON.parse(JSON.stringify(m.config.image)) : undefined,
@@ -144,8 +191,8 @@ async function save() {
     toast('请填写对外模型名', 'error')
     return
   }
-  if (!form.provider_id) {
-    toast('请选择所属渠道', 'error')
+  if (!form.provider_ids.length) {
+    toast('请至少选择一个渠道', 'error')
     return
   }
   const parsed = parseObject(form.defaultsText)
@@ -157,16 +204,19 @@ async function save() {
   const config: ModelConfig = {}
   if (form.system_prompt.trim()) config.system_prompt = form.system_prompt.trim()
   if (parsed.value && Object.keys(parsed.value).length) config.defaults = parsed.value
+  if (form.provider_ids.length > 1) config.route_strategy = form.route_strategy
   if (needChat.value && !isSpecEmpty(form.config.chat)) config.chat = form.config.chat!
   if (needImage.value && !isSpecEmpty(form.config.image)) config.image = form.config.image!
   if (needVideo.value && !isSpecEmpty(form.config.video)) config.video = form.config.video!
-  if (needVideo.value && !isSpecEmpty(form.config.video_query)) config.video_query = form.config.video_query!
+  if (needVideo.value && !isSpecEmpty(form.config.video_query))
+    config.video_query = form.config.video_query!
 
   saving.value = true
   try {
     await api.saveModel({
       id: form.id || undefined,
-      provider_id: form.provider_id,
+      provider_id: form.provider_ids[0],
+      provider_ids: form.provider_ids,
       name: form.name.trim(),
       upstream_name: form.upstream_name.trim() || form.name.trim(),
       capability: form.capability,
@@ -205,6 +255,10 @@ function applyPreset(preset: VideoPreset) {
 function capBadge(cap: string) {
   return { chat: 'brand', image: 'warn', video: 'ok', embedding: '' }[cap] || ''
 }
+
+function extraProviders(m: Model): number {
+  return Math.max(0, (m.provider_ids?.length || 0) - 1)
+}
 </script>
 
 <template>
@@ -212,7 +266,7 @@ function capBadge(cap: string) {
     <div class="page-head">
       <div>
         <h2>模型</h2>
-        <p>对外模型名与上游解耦，可用同一个上游模型配出多个默认参数不同的对外模型。</p>
+        <p>对外模型名与上游解耦，可同时绑定多个渠道：某个上游报错时自动切换到下一个。</p>
       </div>
       <div class="row">
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
@@ -241,9 +295,16 @@ function capBadge(cap: string) {
               <div v-if="m.remark" class="muted" style="font-size: 12px">{{ m.remark }}</div>
             </td>
             <td><span class="badge" :class="capBadge(m.capability)">{{ capLabel(m.capability) }}</span></td>
-            <td class="dim">
-              {{ m.provider_name || '—' }}
-              <span class="muted" style="font-size: 11.5px">（{{ kindLabel(m.provider_kind || '') }}）</span>
+            <td>
+              <div class="dim">
+                {{ m.provider_name || '—' }}
+                <span v-if="extraProviders(m)" class="badge brand" style="margin-left: 4px">
+                  +{{ extraProviders(m) }}
+                </span>
+              </div>
+              <div v-if="extraProviders(m) && m.config?.route_strategy" class="muted" style="font-size: 11.5px">
+                {{ m.config.route_strategy === 'round_robin' ? '轮询' : m.config.route_strategy === 'random' ? '随机' : '主备' }}
+              </div>
             </td>
             <td class="mono dim clamp-1">{{ m.upstream_name }}</td>
             <td>
@@ -279,10 +340,12 @@ function capBadge(cap: string) {
     >
       <div class="grid cols-2" style="gap: 0 18px">
         <div class="field">
-          <label>所属渠道</label>
-          <select v-model.number="form.provider_id" class="select">
-            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
+          <label>对外模型名</label>
+          <input v-model="form.name" class="input code" placeholder="gpt-4o-mini" />
+        </div>
+        <div class="field">
+          <label>上游模型名</label>
+          <input v-model="form.upstream_name" class="input code" placeholder="留空则与对外名一致" />
         </div>
         <div class="field">
           <label>能力</label>
@@ -292,12 +355,52 @@ function capBadge(cap: string) {
           <div class="hint">{{ capabilities.find((c) => c.value === form.capability)?.endpoint }}</div>
         </div>
         <div class="field">
-          <label>对外模型名</label>
-          <input v-model="form.name" class="input code" placeholder="gpt-4o-mini" />
+          <label>自动切换策略</label>
+          <select v-model="form.route_strategy" class="select" :disabled="form.provider_ids.length < 2">
+            <option value="failover">主备（按顺序，失败切换）</option>
+            <option value="round_robin">轮询（依次轮流使用）</option>
+            <option value="random">随机</option>
+          </select>
+          <div class="hint">仅在绑定多个渠道时生效。</div>
         </div>
-        <div class="field">
-          <label>上游模型名</label>
-          <input v-model="form.upstream_name" class="input code" placeholder="留空则与对外名一致" />
+      </div>
+
+      <div class="field">
+        <label>绑定渠道（按顺序，第一个为默认）</label>
+        <div
+          v-for="(p, i) in boundProviders"
+          :key="p.id"
+          class="list-row"
+          style="align-items: center; margin-bottom: 6px"
+        >
+          <span class="badge brand">{{ i + 1 }}</span>
+          <span style="flex: 1">
+            {{ p.name }}
+            <span class="muted" style="font-size: 12px">（{{ kindLabel(p.kind) }}）</span>
+          </span>
+          <button class="btn btn-sm btn-ghost" :disabled="i === 0" @click="moveProvider(i, -1)">上移</button>
+          <button
+            class="btn btn-sm btn-ghost"
+            :disabled="i === boundProviders.length - 1"
+            @click="moveProvider(i, 1)"
+          >
+            下移
+          </button>
+          <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="removeProvider(p.id)">
+            移除
+          </button>
+        </div>
+        <div v-if="!boundProviders.length" class="hint">尚未选择渠道，请至少添加一个。</div>
+        <div v-if="availableProviders.length" style="margin-top: 10px">
+          <div class="field-label">可添加的渠道</div>
+          <div class="chips">
+            <span v-for="p in availableProviders" :key="p.id" class="chip" @click="addProvider(p.id)">
+              + {{ p.name }}
+            </span>
+          </div>
+        </div>
+        <div v-if="form.provider_ids.length > 1" class="hint">
+          调用失败时会按上述顺序自动切换到下一个渠道；同一渠道内的多个入口与密钥也会依次重试。
         </div>
       </div>
 

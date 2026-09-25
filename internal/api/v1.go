@@ -344,7 +344,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, key store.A
 	}
 	writeJSON(w, http.StatusOK, resp)
 	s.logUsage(store.UsageLog{
-		Capability: store.CapImage, Model: m.Name, ProviderName: safeName(usedProvider, p),
+		Capability: store.CapImage, Model: m.Name, ProviderName: safeName(usedProvider, firstProvider(ps)),
 		APIKeyName: key.Name, Status: 200, LatencyMS: time.Since(start).Milliseconds(),
 		RequestBody: requestBody, ResponsePreview: fmt.Sprintf("生成 %d 张图片", len(data)),
 	})
@@ -381,16 +381,16 @@ func (s *Server) handleVideoCreate(w http.ResponseWriter, r *http.Request, key s
 		}
 		in.Extra[k] = v
 	}
-	m, p, err := s.eng.Resolve(model)
+	m, ps, err := s.eng.ResolveAll(model)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "invalid_request_error", "模型不可用："+err.Error())
 		return
 	}
 	start := time.Now()
-	task, err := s.eng.CreateVideo(r.Context(), m, p, in)
+	task, err := s.eng.CreateVideo(r.Context(), m, ps, in)
 	if err != nil {
 		s.logUsage(store.UsageLog{
-			Capability: store.CapVideo, Model: m.Name, ProviderName: p.Name,
+			Capability: store.CapVideo, Model: m.Name, ProviderName: firstProvider(ps).Name,
 			APIKeyName: key.Name, Status: 502, LatencyMS: time.Since(start).Milliseconds(), Error: err.Error(),
 		})
 		writeErr(w, http.StatusBadGateway, "upstream_error", err.Error())
@@ -398,7 +398,7 @@ func (s *Server) handleVideoCreate(w http.ResponseWriter, r *http.Request, key s
 	}
 	writeJSON(w, http.StatusOK, s.taskResponse(task))
 	s.logUsage(store.UsageLog{
-		Capability: store.CapVideo, Model: m.Name, ProviderName: p.Name,
+		Capability: store.CapVideo, Model: m.Name, ProviderName: firstProvider(ps).Name,
 		APIKeyName: key.Name, Status: 200, LatencyMS: time.Since(start).Milliseconds(),
 		RequestBody: previewOf(raw, 2000), ResponsePreview: "已提交视频任务 " + task.TaskID,
 	})
@@ -491,6 +491,14 @@ func safeName(p store.Provider, fallback store.Provider) string {
 		return p.Name
 	}
 	return fallback.Name
+}
+
+// firstProvider 取模型的默认渠道（绑定列表首个），用于日志兜底。
+func firstProvider(ps []store.Provider) store.Provider {
+	if len(ps) > 0 {
+		return ps[0]
+	}
+	return store.Provider{}
 }
 
 func usageMap(u relay.Usage) map[string]any {
