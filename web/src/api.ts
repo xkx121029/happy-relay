@@ -275,9 +275,12 @@ export const api = {
   saveSkill: (s: Partial<Skill>) =>
     s.id ? put<Skill>(`/api/skills/${s.id}`, s) : post<Skill>('/api/skills', s),
   deleteSkill: (id: number) => del<{ ok: boolean }>(`/api/skills/${id}`),
+  generateSkill: (body: { description: string; capability?: string }) =>
+    post<{ draft: any; raw_reply: string; system_model: string }>('/api/skills/generate', body),
 
   // 任务 / 日志
   listTasks: (limit = 50) => request<VideoTask[]>(`/api/tasks?limit=${limit}`),
+  deleteTask: (id: string) => del<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}`),
   listLogs: (params: { limit?: number; capability?: string; q?: string } = {}) => {
     const q = new URLSearchParams()
     if (params.limit) q.set('limit', String(params.limit))

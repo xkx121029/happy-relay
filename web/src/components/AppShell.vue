@@ -18,6 +18,7 @@ const groups: { name: string; items: NavItem[] }[] = [
     items: [
       { path: '/', label: '概览', desc: '调用统计与近期动态' },
       { path: '/playground', label: '调试台', desc: '直接在网页里对话、出图、出视频' },
+      { path: '/tasks', label: '任务', desc: '视频任务的进度与结果' },
     ],
   },
   {

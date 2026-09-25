@@ -8,6 +8,9 @@ import { capLabel } from '../utils'
 const loading = ref(true)
 const editing = ref(false)
 const saving = ref(false)
+const aiOpen = ref(false)
+const aiGenerating = ref(false)
+const aiForm = reactive({ description: '', capability: 'chat' })
 
 interface SkillForm {
   id: number
@@ -142,6 +145,56 @@ async function save() {
   }
 }
 
+// normalizeParam 把 AI 返回的参数描述规整成表单可用的结构。
+function normalizeParam(input: any): SkillParam {
+  const type = ['text', 'textarea', 'number', 'select'].includes(input?.type) ? input.type : 'text'
+  return {
+    key: String(input?.key || ''),
+    label: String(input?.label || input?.key || ''),
+    type,
+    default: input?.default != null ? String(input.default) : '',
+    options: Array.isArray(input?.options) ? input.options.map((o: any) => String(o)) : [],
+    placeholder: input?.placeholder != null ? String(input.placeholder) : '',
+  }
+}
+
+// generateWithAI 让系统级 AI 依据描述产出技能草案，再交给编辑弹窗确认。
+async function generateWithAI() {
+  if (!aiForm.description.trim()) {
+    toast('请先描述这个技能要做什么', 'error')
+    return
+  }
+  aiGenerating.value = true
+  try {
+    const res = await api.generateSkill({
+      description: aiForm.description.trim(),
+      capability: aiForm.capability,
+    })
+    const draft = res.draft || {}
+    Object.assign(form, {
+      id: 0,
+      slug: String(draft.slug || ''),
+      name: String(draft.name || ''),
+      description: String(draft.description || ''),
+      category: String(draft.category || '通用'),
+      icon: String(draft.icon || ''),
+      capability: String(draft.capability || aiForm.capability),
+      prompt: String(draft.prompt || ''),
+      params: Array.isArray(draft.params) ? draft.params.map(normalizeParam) : [],
+      enabled: true,
+      sort_order: 200,
+    })
+    aiOpen.value = false
+    editing.value = true
+    if (draft.parse_error) toast(String(draft.parse_error), 'error')
+    else toast('已生成技能草案，请检查后保存')
+  } catch (e: any) {
+    toast(e.message || '生成失败', 'error')
+  } finally {
+    aiGenerating.value = false
+  }
+}
+
 async function remove(sk: Skill) {
   if (!confirm(`确定删除技能「${sk.name}」？`)) return
   try {
@@ -163,6 +216,7 @@ async function remove(sk: Skill) {
       </div>
       <div class="row">
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
+        <button class="btn btn-sm" @click="aiOpen = true">AI 生成</button>
         <button class="btn btn-primary btn-sm" @click="openCreate">新建技能</button>
       </div>
     </div>
@@ -331,6 +385,38 @@ async function remove(sk: Skill) {
         <button class="btn" @click="editing = false">取消</button>
         <button class="btn btn-primary" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!-- AI 生成技能 -->
+    <Modal
+      v-if="aiOpen"
+      title="用 AI 生成技能"
+      subtitle="描述你想复用的任务，系统级 AI 会设计出带参数的提示词模板。"
+      @close="aiOpen = false"
+    >
+      <div class="field">
+        <label>技能用途</label>
+        <textarea
+          v-model="aiForm.description"
+          class="textarea"
+          rows="4"
+          placeholder="例如：把一段会议记录整理成待办清单，按负责人分组，标注截止时间与优先级"
+        />
+      </div>
+      <div class="field">
+        <label>适用能力</label>
+        <select v-model="aiForm.capability" class="select">
+          <option v-for="c in capabilities" :key="c.value" :value="c.value">{{ c.label }}</option>
+        </select>
+      </div>
+      <div class="hint">需要先在「设置」里指定系统级 AI 模型；生成后可继续手工调整再保存。</div>
+
+      <template #footer>
+        <button class="btn" @click="aiOpen = false">取消</button>
+        <button class="btn btn-primary" :disabled="aiGenerating" @click="generateWithAI">
+          {{ aiGenerating ? '生成中…' : '生成草案' }}
         </button>
       </template>
     </Modal>
