@@ -21,6 +21,16 @@ const (
 	SettingPanelTitle  = "panel_title"
 )
 
+// ---------- 健康检查 ----------
+
+// handleHealth 供部署探活使用，不鉴权也不触达数据库。
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"time":   time.Now().Format(time.RFC3339),
+	})
+}
+
 // ---------- 元信息 ----------
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
@@ -504,6 +514,21 @@ func (s *Server) handleTaskList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, s.taskResponse(t))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleTaskDelete 删除本地任务记录（面板用于取消任务）。
+func (s *Server) handleTaskDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, err := s.st.GetVideoTaskByTaskID(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "invalid_request_error", "视频任务不存在："+id)
+		return
+	}
+	if err := s.st.DeleteVideoTask(task.ID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // ---------- 日志 ----------

@@ -382,3 +382,117 @@ func buildConnectorUserPrompt(req connectorRequest) string {
 	}
 	return b.String()
 }
+
+// ---------- 系统级 AI 生成技能 ----------
+
+type skillRequest struct {
+	Description string `json:"description"`
+	Capability  string `json:"capability"`
+}
+
+// handleSkillGenerate 用系统级 AI 把一段自然语言描述翻译成技能草案。
+func (s *Server) handleSkillGenerate(w http.ResponseWriter, r *http.Request) {
+	var req skillRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "参数解析失败："+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Description) == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请先描述这个技能要做什么")
+		return
+	}
+	systemModel := s.st.GetSetting(SettingSystemModel, "")
+	if systemModel == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error",
+			"尚未指定系统级 AI，请先在「设置」里选择一个已创建的文本模型")
+		return
+	}
+	if req.Capability == "" {
+		req.Capability = store.CapChat
+	}
+
+	start := time.Now()
+	out, provider, err := s.callSystemAI(r.Context(), systemModel, skillSystemPrompt, buildSkillUserPrompt(req))
+	if err != nil {
+		s.logUsage(store.UsageLog{
+			Capability: "skill", Model: systemModel, ProviderName: provider,
+			APIKeyName: panelKey.Name, Status: 502,
+			LatencyMS: time.Since(start).Milliseconds(), Error: err.Error(),
+		})
+		writeErr(w, http.StatusBadGateway, "upstream_error", "系统级 AI 调用失败："+err.Error())
+		return
+	}
+	draft, _ := parseSkillDraft(out.Content, req)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"draft": draft, "raw_reply": out.Content, "system_model": systemModel,
+	})
+	s.logUsage(store.UsageLog{
+		Capability: "skill", Model: systemModel, ProviderName: provider,
+		APIKeyName: panelKey.Name, Status: 200,
+		LatencyMS:       time.Since(start).Milliseconds(),
+		PromptTokens:    out.Usage.PromptTokens,
+		CompletionTokens: out.Usage.CompletionTokens,
+		ResponsePreview: truncateStr(out.Content, 1200),
+	})
+}
+
+// parseSkillDraft 解析 AI 返回的 JSON；解析失败时把原文当提示词，方便手工修正。
+func parseSkillDraft(reply string, req skillRequest) (map[string]any, error) {
+	text := extractJSONObject(reply)
+	if text == "" {
+		return map[string]any{
+			"name":        "",
+			"capability":  req.Capability,
+			"prompt":      strings.TrimSpace(reply),
+			"parse_error": "AI 未返回可识别的 JSON，已把原文填入提示词，请手工调整",
+		}, errors.New("AI 未返回可识别的 JSON")
+	}
+	var draft map[string]any
+	if err := json.Unmarshal([]byte(text), &draft); err != nil {
+		return map[string]any{"parse_error": err.Error()}, err
+	}
+	if _, ok := draft["capability"]; !ok {
+		draft["capability"] = req.Capability
+	}
+	return draft, nil
+}
+
+func buildSkillUserPrompt(req skillRequest) string {
+	var b strings.Builder
+	b.WriteString("技能用途描述：\n")
+	b.WriteString(strings.TrimSpace(req.Description))
+	b.WriteString("\n\n适用能力：")
+	b.WriteString(req.Capability)
+	return b.String()
+}
+
+const skillSystemPrompt = `你是一个提示词模板设计师。用户会描述一个希望复用的任务，你要把它设计成一个可参数化的「技能」。
+严格输出单个 JSON 对象，不要输出任何解释文字，不要用 Markdown 代码块包裹。
+
+JSON 结构：
+{
+  "name": "简短的中文技能名，例如 周报生成",
+  "slug": "小写英文短横线标识，例如 weekly-report",
+  "description": "一句话说明这个技能做什么、适合什么场景",
+  "category": "文本 | 图片 | 视频 之一",
+  "capability": "chat | image | video",
+  "icon": "可选：chat / wand / list / globe / braces / image / film / sparkles 之一",
+  "prompt": "完整提示词模板，用 {{参数key}} 作为占位符",
+  "params": [
+    {
+      "key": "英文参数名",
+      "label": "中文显示名",
+      "type": "text | textarea | number | select",
+      "default": "可选默认值",
+      "options": ["仅 type=select 时填写候选值"],
+      "placeholder": "可选输入提示"
+    }
+  ]
+}
+
+要求：
+- prompt 必须包含至少一个 {{参数}} 占位符，且每个占位符都能在 params 里找到同名 key。
+- 参数不宜过多，2 到 4 个即可；核心输入用 textarea，选择项用 select 并给 options。
+- prompt 要写成能直接投喂给模型的完整指令，包含角色、任务与输出格式约束。
+- capability 为 image 或 video 时，同样用 {{input}} 之类的占位符描述画面内容。
+- 不要臆造用户没提到的字段，只依据描述设计。`

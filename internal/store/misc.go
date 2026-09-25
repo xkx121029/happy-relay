@@ -199,6 +199,18 @@ func orEmpty(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
+// DeleteVideoTask 删除本地任务记录。
+func (s *Store) DeleteVideoTask(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM video_tasks WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) GetVideoTaskByTaskID(taskID string) (VideoTask, error) {
 	return s.scanTask(s.db.QueryRow(taskSelect+` WHERE t.task_id=?`, taskID))
 }

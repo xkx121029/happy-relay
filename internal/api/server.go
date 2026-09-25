@@ -32,14 +32,21 @@ func New(cfg *config.Config, st *store.Store, eng *relay.Engine, static fs.FS) *
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	// ---------- 健康检查 ----------
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+
 	// ---------- 对外 v1 ----------
 	mux.HandleFunc("GET /v1/models", s.withKey(s.handleModels))
+	mux.HandleFunc("GET /v1/skills", s.withKey(s.handleSkillCatalog))
 	mux.HandleFunc("POST /v1/chat/completions", s.withKey(s.handleChat))
 	mux.HandleFunc("POST /v1/completions", s.withKey(s.handleLegacyCompletion))
 	mux.HandleFunc("POST /v1/embeddings", s.withKey(s.handleEmbeddings))
 	mux.HandleFunc("POST /v1/images/generations", s.withKey(s.handleImage))
+	mux.HandleFunc("GET /v1/videos", s.withKey(s.handleVideoList))
 	mux.HandleFunc("POST /v1/videos", s.withKey(s.handleVideoCreate))
 	mux.HandleFunc("GET /v1/videos/{id}", s.withKey(s.handleVideoGet))
+	mux.HandleFunc("DELETE /v1/videos/{id}", s.withKey(s.handleVideoDelete))
+	mux.HandleFunc("GET /v1/videos/{id}/stream", s.withKey(s.handleVideoStream))
 	// 兼容以 /generations 结尾的写法
 	mux.HandleFunc("POST /v1/videos/generations", s.withKey(s.handleVideoCreate))
 	mux.HandleFunc("GET /v1/videos/generations/{id}", s.withKey(s.handleVideoGet))
@@ -68,8 +75,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/skills", s.handleSkillSave)
 	mux.HandleFunc("PUT /api/skills/{id}", s.handleSkillSave)
 	mux.HandleFunc("DELETE /api/skills/{id}", s.handleSkillDelete)
+	mux.HandleFunc("POST /api/skills/generate", s.handleSkillGenerate)
 
 	mux.HandleFunc("GET /api/tasks", s.handleTaskList)
+	mux.HandleFunc("DELETE /api/tasks/{id}", s.handleTaskDelete)
 
 	mux.HandleFunc("GET /api/logs", s.handleLogList)
 	mux.HandleFunc("DELETE /api/logs", s.handleLogClear)

@@ -37,6 +37,36 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, key store.
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
+// ---------- /v1/skills ----------
+
+// handleSkillCatalog 返回可用的站内技能及其说明，供客户端在调用前查询。
+func (s *Server) handleSkillCatalog(w http.ResponseWriter, r *http.Request, key store.APIKey) {
+	list, err := s.st.ListSkills()
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(list))
+	for _, sk := range list {
+		if !sk.Enabled {
+			continue
+		}
+		data = append(data, map[string]any{
+			"slug":        sk.Slug,
+			"name":        sk.Name,
+			"description": sk.Description,
+			"category":    sk.Category,
+			"capability":  sk.Capability,
+			"params":      sk.Params,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+		"usage":  "在 /v1/chat/completions、/v1/images/generations、/v1/videos 里带上 skill=<slug> 与 skill_params={...} 即可套用",
+	})
+}
+
 // ---------- /v1/chat/completions ----------
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, key store.APIKey) {
@@ -452,6 +482,98 @@ func (s *Server) handleVideoGet(w http.ResponseWriter, r *http.Request, key stor
 		}
 	}
 	writeJSON(w, http.StatusOK, s.taskResponse(task))
+}
+
+// handleVideoList 列出该秘钥可见的视频任务。
+func (s *Server) handleVideoList(w http.ResponseWriter, r *http.Request, key store.APIKey) {
+	list, err := s.st.ListVideoTasks(50)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(list))
+	for _, t := range list {
+		if !keyAllowed(key, t.Model) {
+			continue
+		}
+		data = append(data, s.taskResponse(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// handleVideoDelete 删除本地任务记录，可用于取消或清理。
+func (s *Server) handleVideoDelete(w http.ResponseWriter, r *http.Request, key store.APIKey) {
+	id := r.PathValue("id")
+	task, err := s.st.GetVideoTaskByTaskID(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "invalid_request_error", "视频任务不存在："+id)
+		return
+	}
+	if !keyAllowed(key, task.Model) {
+		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权操作此任务")
+		return
+	}
+	if err := s.st.DeleteVideoTask(task.ID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "video.generation", "deleted": true})
+}
+
+// handleVideoStream 以 SSE 持续推送任务状态，直到结束或超过 30 分钟。
+// 状态由后台轮询器刷新，这里只读取数据库，不额外给上游施压。
+func (s *Server) handleVideoStream(w http.ResponseWriter, r *http.Request, key store.APIKey) {
+	id := r.PathValue("id")
+	task, err := s.st.GetVideoTaskByTaskID(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "invalid_request_error", "视频任务不存在："+id)
+		return
+	}
+	if !keyAllowed(key, task.Model) {
+		writeErr(w, http.StatusForbidden, "invalid_request_error", "该 API 秘钥无权查询此任务")
+		return
+	}
+
+	sse := newSSEWriter(w)
+	defer sse.done()
+	stopHeartbeat := s.startHeartbeat(sse)
+	defer stopHeartbeat()
+
+	last := ""
+	push := func(cur store.VideoTask) bool {
+		signature := cur.Status + ":" + fmt.Sprint(cur.Progress)
+		finished := cur.Status == store.TaskSucceeded || cur.Status == store.TaskFailed
+		if signature != last || finished {
+			last = signature
+			_ = sse.send(s.taskResponse(cur))
+		}
+		return finished
+	}
+	if push(task) {
+		return
+	}
+
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(30 * time.Minute)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+			cur, err := s.st.GetVideoTaskByTaskID(id)
+			if err != nil {
+				return
+			}
+			if push(cur) {
+				return
+			}
+		}
+	}
 }
 
 // taskResponse 是视频任务的统一对外结构。
