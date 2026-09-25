@@ -15,6 +15,7 @@ data
 # 本地二进制与临时物料
 relay
 relay.exe
+*.exe
 *.tar
 .canvasui
 

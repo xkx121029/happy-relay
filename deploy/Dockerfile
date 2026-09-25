@@ -6,7 +6,9 @@
 #   docker buildx build --platform linux/arm64 -f deploy/Dockerfile -t happy-relay:arm64 .
 
 # ---------- 阶段一：构建网页面板 ----------
-FROM node:22-alpine AS web
+# --platform=$BUILDPLATFORM：构建阶段始终跑在宿主机架构上（x86 机器上做 arm64 镜像，
+# 前端与 Go 编译都不会走 QEMU 模拟，速度接近原生）。只有最终运行镜像是目标架构。
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/web
 
 # 先只拷贝依赖清单，让依赖层能被缓存复用
@@ -18,9 +20,10 @@ COPY web/ ./
 RUN npm run build
 
 # ---------- 阶段二：编译后端 ----------
-FROM golang:1.26-alpine AS build
-ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+# TARGETOS / TARGETARCH 由 buildx 根据 --platform 自动注入
+ARG TARGETOS
+ARG TARGETARCH
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 
