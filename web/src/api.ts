@@ -48,6 +48,8 @@ export interface ModelConfig {
   tier?: string
   /** 图片请求体组装模式：standard（默认）| extra_body（Agnes 等要求放进 extra_body） */
   image_mode?: string
+  /** 上下文窗口（token）。留空时回退到模型库探测值，再按上游模型名推断 */
+  context_length?: number
   chat?: TemplateSpec | null
   image?: TemplateSpec | null
   video?: TemplateSpec | null
@@ -73,6 +75,8 @@ export interface Model {
   upstream_name: string
   capability: string
   config: ModelConfig
+  /** 模型库中探测到的上下文长度，只读回退值 */
+  catalog_context_length?: number
   enabled: boolean
   remark: string
   created_at: string
@@ -92,6 +96,8 @@ export interface CatalogModel {
   remark: string
   created_at: string
   updated_at: string
+  /** 探测到的上下文窗口（token），0 或缺失表示未知 */
+  context_length?: number
   /** 被多少个对外模型引用 */
   used_by?: number
 }
@@ -269,6 +275,8 @@ export interface ProbeModel {
   /** 推断出的能力：chat | image | video | embedding，空表示未识别 */
   capability: string
   hint?: string
+  /** 从上游模型列表里读到的上下文窗口，读不到时为 0 */
+  context_length?: number
 }
 
 export interface ProbeResult {

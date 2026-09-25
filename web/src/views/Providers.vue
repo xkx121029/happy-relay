@@ -281,7 +281,12 @@ async function importSelected() {
     const models = selected.value
       .map((id) => allProbeModels.value.find((m) => m.id === id))
       .filter((m): m is ProbeModel => !!m)
-      .map((m) => ({ model_id: m.id, capability: m.capability || 'chat' }))
+      .map((m) => ({
+        model_id: m.id,
+        capability: m.capability || 'chat',
+        // 把探测到的上下文窗口一并入库，供后续的容量校验与 auto 路由使用。
+        context_length: m.context_length || 0,
+      }))
     const res = await api.importCatalog({ provider_id: providerID, models })
     toast(`已加入模型库：新增 ${res.created} 个，更新 ${res.updated} 个`)
     probeOpen.value = false

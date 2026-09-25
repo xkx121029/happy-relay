@@ -20,6 +20,7 @@ function blank() {
     capability: 'chat',
     enabled: true,
     remark: '',
+    context_length: '',
   }
 }
 
@@ -34,6 +35,13 @@ const capabilities = computed(
       { value: 'embedding', label: '文本向量' },
     ],
 )
+
+// fmtK 把上下文长度压缩成易读形式，如 128000 → 128K。
+function fmtK(n: number): string {
+  if (n >= 1000000) return Math.round(n / 10000) / 100 + 'M'
+  if (n >= 1000) return Math.round(n / 1000) + 'K'
+  return String(n)
+}
 
 const grouped = computed(() => {
   const map = new Map<number, CatalogModel[]>()
@@ -91,6 +99,7 @@ function openEdit(item: CatalogModel) {
     capability: item.capability,
     enabled: item.enabled,
     remark: item.remark,
+    context_length: item.context_length ? String(item.context_length) : '',
   })
   editing.value = true
 }
@@ -113,6 +122,7 @@ async function save() {
       capability: form.capability,
       enabled: form.enabled,
       remark: form.remark.trim(),
+      context_length: Math.max(0, Math.round(Number(form.context_length) || 0)),
       source: 'manual',
     })
     toast('已保存到模型库')
@@ -193,6 +203,7 @@ function capBadge(capability: string) {
               <tr>
                 <th>上游模型名</th>
                 <th>能力</th>
+                <th>上下文</th>
                 <th>来源</th>
                 <th>被引用</th>
                 <th>状态</th>
@@ -206,6 +217,7 @@ function capBadge(capability: string) {
                   <div v-if="item.remark" class="muted" style="font-size: 12px">{{ item.remark }}</div>
                 </td>
                 <td><span class="badge" :class="capBadge(item.capability)">{{ capLabel(item.capability) }}</span></td>
+                <td class="dim mono">{{ item.context_length ? fmtK(item.context_length) : '—' }}</td>
                 <td>
                   <span class="badge" :class="item.source === 'probe' ? 'brand' : ''">
                     {{ item.source === 'probe' ? '探测' : '手工' }}
@@ -258,6 +270,17 @@ function capBadge(capability: string) {
         <select v-model="form.capability" class="select">
           <option v-for="c in capabilities" :key="c.value" :value="c.value">{{ c.label }}</option>
         </select>
+      </div>
+      <div class="field">
+        <label>上下文窗口（token）</label>
+        <input
+          v-model="form.context_length"
+          class="input"
+          type="number"
+          min="0"
+          placeholder="探测不到时可手工填写"
+        />
+        <div class="hint">对外模型未声明上下文时，会回退到这里的值。</div>
       </div>
       <div class="field">
         <label>备注</label>

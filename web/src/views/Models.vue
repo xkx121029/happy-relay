@@ -26,6 +26,7 @@ interface ModelForm {
   route_strategy: string
   tier: string
   image_mode: string
+  context_length: string
   name: string
   capability: string
   enabled: boolean
@@ -43,6 +44,7 @@ function blank(): ModelForm {
     route_strategy: 'failover',
     tier: '',
     image_mode: '',
+    context_length: '',
     name: '',
     capability: 'chat',
     enabled: true,
@@ -73,6 +75,14 @@ const tierOptions = [
   { value: 'standard', label: '标准 · 日常任务' },
   { value: 'pro', label: '强力 · 复杂推理' },
 ]
+
+// currentContext 展示该模型当前生效的上下文窗口：
+// 优先用表单里填写的值，其次是模型库探测值（都没填时后端还会按模型名推断）。
+const currentContext = computed(() => {
+  const typed = Number(form.context_length)
+  if (typed > 0) return Math.round(typed)
+  return models.value.find((m) => m.id === form.id)?.catalog_context_length || 0
+})
 
 const boundProviders = computed<Provider[]>(() =>
   form.inputs
@@ -167,6 +177,7 @@ function openEdit(m: Model) {
     route_strategy: m.config?.route_strategy || 'failover',
     tier: m.config?.tier || '',
     image_mode: m.config?.image_mode || '',
+    context_length: m.config?.context_length ? String(m.config.context_length) : '',
     name: m.name,
     capability: m.capability,
     enabled: m.enabled,
@@ -230,6 +241,9 @@ async function save() {
   if (inputs.length > 1) config.route_strategy = form.route_strategy
   if (form.tier) config.tier = form.tier
   if (form.capability === 'image' && form.image_mode) config.image_mode = form.image_mode
+  // 上下文窗口：留空表示交给模型库探测值与启发式推断。
+  const ctx = Number(form.context_length)
+  if (ctx > 0) config.context_length = Math.round(ctx)
   if (needChat.value && !isSpecEmpty(form.config.chat)) config.chat = form.config.chat!
   if (needImage.value && !isSpecEmpty(form.config.image)) config.image = form.config.image!
   if (needVideo.value && !isSpecEmpty(form.config.video)) config.video = form.config.video!
@@ -464,6 +478,24 @@ function tierLabel(m: Model) {
           <div class="hint">
             Agnes Image 2.1 Flash 要求 response_format 与参考图放在 extra_body 里，选这一项即可兼容。
           </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>上下文窗口（token）</label>
+        <input
+          v-model="form.context_length"
+          class="input"
+          type="number"
+          min="0"
+          placeholder="留空自动推断"
+        />
+        <div class="hint">
+          用于调用前的容量校验与 auto 路由。留空时依次回退到模型库探测值、按上游模型名推断。
+          <template v-if="currentContext > 0">
+            当前生效约 {{ currentContext.toLocaleString() }} tokens。
+          </template>
+          <template v-else>当前无法确定，将不做长度校验。</template>
         </div>
       </div>
 

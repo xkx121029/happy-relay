@@ -24,6 +24,8 @@ const form = reactive({
   stream_rate: '',
   heartbeat_sec: '',
   video_poll_sec: '',
+  context_policy: 'reject',
+  context_safety_percent: '',
 })
 
 const chatModels = computed(() => models.value.filter((m) => m.enabled && m.capability === 'chat'))
@@ -70,6 +72,8 @@ async function load() {
     form.stream_rate = s.stream_rate || ''
     form.heartbeat_sec = s.heartbeat_sec || ''
     form.video_poll_sec = s.video_poll_sec || ''
+    form.context_policy = s.context_policy || 'reject'
+    form.context_safety_percent = s.context_safety_percent || ''
     // 开关类没有「留空」状态：没设置过就按当前生效值显示（可能来自环境变量）。
     form.log_body = s.log_body ? s.log_body !== 'off' : (effective.value?.log_body ?? true)
     form.stream_smooth = s.stream_smooth
@@ -110,6 +114,8 @@ async function save() {
       stream_rate: numStr(form.stream_rate),
       heartbeat_sec: numStr(form.heartbeat_sec),
       video_poll_sec: numStr(form.video_poll_sec),
+      context_policy: form.context_policy,
+      context_safety_percent: numStr(form.context_safety_percent),
     }
     const saved = await api.saveSettings(payload)
     // 重新拉取元信息，让「当前生效值」与默认值提示保持准确。
@@ -310,7 +316,7 @@ async function onImportFile(e: Event) {
           </label>
           <div class="hint">关闭后调用日志不再保存请求体与响应预览，适合对隐私敏感的场景。</div>
         </div>
-        <div class="field" style="margin-bottom: 0">
+        <div class="field">
           <label>流式输出平滑</label>
           <label class="switch">
             <input v-model="form.stream_smooth" type="checkbox" />
@@ -318,6 +324,30 @@ async function onImportFile(e: Event) {
             <span>{{ form.stream_smooth ? '已开启' : '已关闭' }}</span>
           </label>
           <div class="hint">把上游一次吐出的长文本按速率匀速下发，客户端观感更均匀。</div>
+        </div>
+
+        <div class="grid cols-2" style="gap: 0 14px">
+          <div class="field" style="margin-bottom: 0">
+            <label>上下文超限策略</label>
+            <select v-model="form.context_policy" class="select">
+              <option value="reject">直接报错（推荐）</option>
+              <option value="truncate">自动裁剪最早的历史</option>
+              <option value="off">不校验</option>
+            </select>
+            <div class="hint">按估算输入长度与模型上下文窗口判断，估算值偏保守。</div>
+          </div>
+          <div class="field" style="margin-bottom: 0">
+            <label>上下文安全系数（%）</label>
+            <input
+              v-model="form.context_safety_percent"
+              class="input"
+              type="number"
+              min="50"
+              max="100"
+              :placeholder="'默认 ' + def('context_safety_percent')"
+            />
+            <div class="hint">只把窗口的该比例用于输入，其余留给输出与估算误差。</div>
+          </div>
         </div>
       </div>
 
