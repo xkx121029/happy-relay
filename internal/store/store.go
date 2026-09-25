@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
   enabled      INTEGER NOT NULL DEFAULT 1,
   expires_at   TEXT    NOT NULL DEFAULT '',
   remark       TEXT    NOT NULL DEFAULT '',
+  rpm          INTEGER NOT NULL DEFAULT 0,
+  daily_quota  INTEGER NOT NULL DEFAULT 0,
+  daily_tokens INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT    NOT NULL,
   last_used_at TEXT    NOT NULL DEFAULT ''
 );
@@ -170,6 +173,12 @@ func (s *Store) migrate() error {
 	}
 	if err := s.addColumnIfMissing("models", "inputs", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
+	}
+	// api_keys 表补充配额列。
+	for _, col := range []string{"rpm", "daily_quota", "daily_tokens"} {
+		if err := s.addColumnIfMissing("api_keys", col, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
 	}
 	return s.seedBuiltinSkills()
 }

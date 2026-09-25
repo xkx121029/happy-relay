@@ -538,12 +538,17 @@ type APIKey struct {
 	CreatedAt  string   `json:"created_at"`
 	LastUsedAt string   `json:"last_used_at"`
 
+	// 配额，0 表示不限制
+	RPM         int `json:"rpm"`          // 每分钟请求上限
+	DailyQuota  int `json:"daily_quota"`  // 每日请求上限
+	DailyTokens int `json:"daily_tokens"` // 每日 token 上限
+
 	Calls int64 `json:"calls,omitempty"`
 }
 
 func (s *Store) ListAPIKeys() ([]APIKey, error) {
 	rows, err := s.db.Query(`SELECT k.id,k.name,k.key,k.models,k.enabled,k.expires_at,k.remark,
-		k.created_at,k.last_used_at,
+		k.created_at,k.last_used_at,k.rpm,k.daily_quota,k.daily_tokens,
 		(SELECT COUNT(*) FROM usage_logs l WHERE l.api_key_name=k.name) FROM api_keys k ORDER BY k.id DESC`)
 	if err != nil {
 		return nil, err
@@ -555,7 +560,8 @@ func (s *Store) ListAPIKeys() ([]APIKey, error) {
 		var models string
 		var enabled int
 		if err := rows.Scan(&k.ID, &k.Name, &k.Key, &models, &enabled, &k.ExpiresAt,
-			&k.Remark, &k.CreatedAt, &k.LastUsedAt, &k.Calls); err != nil {
+			&k.Remark, &k.CreatedAt, &k.LastUsedAt, &k.RPM, &k.DailyQuota, &k.DailyTokens,
+			&k.Calls); err != nil {
 			return nil, err
 		}
 		k.Models = unmarshal(models, []string{})
@@ -567,14 +573,14 @@ func (s *Store) ListAPIKeys() ([]APIKey, error) {
 
 // FindAPIKey 按明文秘钥查询可用秘钥。
 func (s *Store) FindAPIKey(key string) (APIKey, error) {
-	return s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,0
-		FROM api_keys WHERE key=?`, key))
+	return s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,
+		rpm,daily_quota,daily_tokens,0 FROM api_keys WHERE key=?`, key))
 }
 
 // FindAPIKeyByID 按主键查询秘钥。
 func (s *Store) FindAPIKeyByID(id int64) (APIKey, error) {
-	return s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,0
-		FROM api_keys WHERE id=?`, id))
+	return s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,
+		rpm,daily_quota,daily_tokens,0 FROM api_keys WHERE id=?`, id))
 }
 
 func (s *Store) scanAPIKey(row *sql.Row) (APIKey, error) {
@@ -582,7 +588,7 @@ func (s *Store) scanAPIKey(row *sql.Row) (APIKey, error) {
 	var models string
 	var enabled int
 	err := row.Scan(&k.ID, &k.Name, &k.Key, &models, &enabled, &k.ExpiresAt, &k.Remark,
-		&k.CreatedAt, &k.LastUsedAt, &k.Calls)
+		&k.CreatedAt, &k.LastUsedAt, &k.RPM, &k.DailyQuota, &k.DailyTokens, &k.Calls)
 	if errors.Is(err, sql.ErrNoRows) {
 		return APIKey{}, ErrNotFound
 	}
@@ -605,8 +611,10 @@ func (s *Store) SaveAPIKey(k APIKey) (APIKey, error) {
 	ts := now()
 	if k.ID == 0 {
 		res, err := s.db.Exec(`INSERT INTO api_keys
-			(name,key,models,enabled,expires_at,remark,created_at) VALUES (?,?,?,?,?,?,?)`,
-			k.Name, k.Key, marshal(cleanList(k.Models)), boolInt(k.Enabled), k.ExpiresAt, k.Remark, ts)
+			(name,key,models,enabled,expires_at,remark,rpm,daily_quota,daily_tokens,created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			k.Name, k.Key, marshal(cleanList(k.Models)), boolInt(k.Enabled), k.ExpiresAt, k.Remark,
+			k.RPM, k.DailyQuota, k.DailyTokens, ts)
 		if err != nil {
 			return k, err
 		}
