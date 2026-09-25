@@ -151,14 +151,21 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
+// probeModel 是探测到的某个上游模型及其推断出的能力。
+type probeModel struct {
+	ID         string `json:"id"`
+	Capability string `json:"capability"` // chat | image | video | embedding，空表示未识别
+	Hint       string `json:"hint,omitempty"`
+}
+
 // probeResult 是单个入口地址的连通性探测结果。
 type probeResult struct {
-	URL     string   `json:"url"`
-	OK      bool     `json:"ok"`
-	Status  int      `json:"status"`
-	Latency int64    `json:"latency_ms"`
-	Detail  string   `json:"detail"`
-	Models  []string `json:"models,omitempty"`
+	URL     string       `json:"url"`
+	OK      bool         `json:"ok"`
+	Status  int          `json:"status"`
+	Latency int64        `json:"latency_ms"`
+	Detail  string       `json:"detail"`
+	Models  []probeModel `json:"models,omitempty"`
 }
 
 func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key string) probeResult {
@@ -222,7 +229,7 @@ func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key 
 		out.Detail = "连通正常"
 		var parsed map[string]any
 		if json.Unmarshal(body, &parsed) == nil {
-			out.Models = extractModelIDs(parsed)
+			out.Models = extractModels(parsed, kind)
 		}
 		if len(out.Models) > 0 {
 			out.Detail = fmt.Sprintf("连通正常，发现 %d 个可用模型", len(out.Models))
@@ -233,19 +240,29 @@ func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key 
 	return out
 }
 
-// extractModelIDs 兼容 OpenAI 与 Gemini 两种模型列表结构。
-func extractModelIDs(raw map[string]any) []string {
-	out := []string{}
+// extractModels 兼容 OpenAI / Gemini / Anthropic 的模型列表结构，
+// 并对每个模型推断能力，便于面板一键导入为对外模型。
+func extractModels(raw map[string]any, kind string) []probeModel {
+	out := []probeModel{}
+	seen := map[string]bool{}
 	push := func(v any) {
-		if obj, ok := v.(map[string]any); ok {
-			if id, ok := obj["id"].(string); ok && id != "" {
-				out = append(out, id)
-				return
-			}
-			if name, ok := obj["name"].(string); ok && name != "" {
-				out = append(out, strings.TrimPrefix(name, "models/"))
-			}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return
 		}
+		id := ""
+		if s, ok := obj["id"].(string); ok {
+			id = s
+		} else if s, ok := obj["name"].(string); ok {
+			id = strings.TrimPrefix(s, "models/")
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		capability, hint := inferCapability(id, obj, kind)
+		out = append(out, probeModel{ID: id, Capability: capability, Hint: hint})
 	}
 	switch data := raw["data"].(type) {
 	case []any:
@@ -264,8 +281,99 @@ func extractModelIDs(raw map[string]any) []string {
 			push(it)
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// capabilityRules 按名称特征推断模型能力，顺序即优先级。
+var capabilityRules = []struct {
+	capability string
+	keywords   []string
+	hint       string
+}{
+	{store.CapEmbedding,
+		[]string{"embed", "bge-", "gte-", "m3e", "jina-embeddings", "text-embedding"},
+		"名称含向量化关键词"},
+	{store.CapVideo,
+		[]string{"veo", "sora", "kling", "wan2", "wanx", "runway", "pika", "hailuo", "luma", "cogvideo", "seedance", "vidu", "mochi", "video"},
+		"名称含视频关键词"},
+	{store.CapImage,
+		[]string{"dall-e", "dalle", "gpt-image", "imagen", "flux", "stable-diffusion", "sdxl", "sd3", "kolors", "seedream", "midjourney", "mj-", "banana", "image", "draw"},
+		"名称含图片关键词"},
+}
+
+// unsupportedModelKeywords 命中的模型不属于四类能力，导入时默认不勾选。
+var unsupportedModelKeywords = []string{
+	"whisper", "tts", "audio", "speech", "moderation", "rerank", "transcribe",
+}
+
+// inferCapability 推断上游模型的能力：优先采信上游声明的字段，其次按名称特征判断。
+func inferCapability(id string, obj map[string]any, kind string) (string, string) {
+	if capability, hint := explicitCapability(obj); capability != "" {
+		return capability, hint
+	}
+	lower := strings.ToLower(id)
+	for _, kw := range unsupportedModelKeywords {
+		if strings.Contains(lower, kw) {
+			return "", "非对话/图片/视频/向量类模型"
+		}
+	}
+	for _, rule := range capabilityRules {
+		for _, kw := range rule.keywords {
+			if strings.Contains(lower, kw) {
+				return rule.capability, rule.hint
+			}
+		}
+	}
+	if kind == store.KindAnthropic {
+		return store.CapChat, "Anthropic 模型默认按对话处理"
+	}
+	return store.CapChat, "未识别到特征，默认按对话处理"
+}
+
+// explicitCapability 读取上游返回里可能存在的显式能力标记。
+func explicitCapability(obj map[string]any) (string, string) {
+	for _, key := range []string{"capability", "type", "model_type", "modelType"} {
+		raw, ok := obj[key].(string)
+		if !ok {
+			continue
+		}
+		if capability := normalizeCapability(raw); capability != "" {
+			return capability, "上游声明 " + key + "=" + raw
+		}
+	}
+	// Gemini 用 supportedGenerationMethods 描述可用方法。
+	if methods, ok := obj["supportedGenerationMethods"].([]any); ok {
+		for _, mv := range methods {
+			method, _ := mv.(string)
+			switch {
+			case strings.Contains(method, "embedContent"),
+				strings.Contains(method, "embedText"),
+				strings.Contains(method, "batchEmbed"):
+				return store.CapEmbedding, "上游声明 methods 含 " + method
+			case strings.Contains(method, "predictLongRunning"),
+				strings.Contains(method, "generateVideos"):
+				return store.CapVideo, "上游声明 methods 含 " + method
+			case strings.Contains(method, "generateContent"):
+				return store.CapChat, "上游声明 methods 含 " + method
+			}
+		}
+	}
+	return "", ""
+}
+
+func normalizeCapability(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "chat", "text", "completion", "llm", "text-generation":
+		return store.CapChat
+	case "image", "images", "text-to-image", "image-generation":
+		return store.CapImage
+	case "video", "videos", "text-to-video", "video-generation":
+		return store.CapVideo
+	case "embedding", "embeddings", "embed":
+		return store.CapEmbedding
+	}
+	return ""
 }
 
 // ---------- 模型 ----------

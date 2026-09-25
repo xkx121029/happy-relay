@@ -180,13 +180,20 @@ export interface Overview {
   recent_tasks: VideoTask[]
 }
 
+export interface ProbeModel {
+  id: string
+  /** 推断出的能力：chat | image | video | embedding，空表示未识别 */
+  capability: string
+  hint?: string
+}
+
 export interface ProbeResult {
   url: string
   ok: boolean
   status: number
   latency_ms: number
   detail: string
-  models?: string[]
+  models?: ProbeModel[]
 }
 
 export interface ConnectorDraft {
