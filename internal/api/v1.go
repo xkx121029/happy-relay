@@ -232,7 +232,7 @@ func (s *Server) runChat(w http.ResponseWriter, r *http.Request, key store.APIKe
 			})
 		}
 		if withMeta {
-			sse.send(relayMeta(m.Name, usedProvider))
+			sse.send(relayMeta(m.Name, requested, usedProvider, difficulty))
 		}
 		sse.done()
 		usage := relay.Usage{}
