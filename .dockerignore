@@ -1,0 +1,24 @@
+.git
+.gitignore
+.github
+
+# 前端依赖与构建中间产物（镜像里会重新装、重新构建）
+web/node_modules
+web/.vite
+
+# 运行时数据
+data
+*.db
+*.db-wal
+*.db-shm
+
+# 本地二进制与临时物料
+relay
+relay.exe
+*.tar
+.canvasui
+
+# 编辑器
+.idea
+.vscode
+*.log

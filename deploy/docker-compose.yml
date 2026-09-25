@@ -1,0 +1,34 @@
+# 自用部署：把 data 目录挂出来即可，删掉容器不丢数据。
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# 若目标机器是 arm64（群晖 / 威联通 / 树莓派等），
+# 在 x86 机器上先执行 deploy/build-arm64.sh 生成镜像包，再拷过去加载。
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: happy-relay:latest
+    container_name: happy-relay
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      RELAY_ADDR: ":8787"
+      RELAY_DATA_DIR: "/data"
+      RELAY_DB: "/data/relay.db"
+      # 面板与生成结果对外的可访问地址，留空则按请求 Host 推断
+      RELAY_PUBLIC_URL: ""
+      # 单次上游请求的兜底超时（秒）
+      RELAY_TIMEOUT: "600"
+      # 视频任务后台轮询间隔（秒）
+      RELAY_VIDEO_POLL: "10"
+      # 日志保留条数上限
+      RELAY_MAX_LOG_ROWS: "20000"
+      # 设为 1 可关闭请求体 / 响应预览落库
+      RELAY_DISABLE_LOG_BODY: "0"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data:/data

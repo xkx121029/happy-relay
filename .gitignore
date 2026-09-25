@@ -100,3 +100,21 @@ desktop.ini
 *.user
 .vscode/
 # <<< gitea-sync <<<
+
+# >>> happy-relay >>>
+# 运行时数据（数据库与生成的文件）
+data/
+*.db
+*.db-wal
+*.db-shm
+relay.db
+
+# 本地编译出的可执行文件
+/relay
+
+# 调研用的临时物料
+.canvasui/
+
+# 交叉编译导出的镜像包
+*.tar
+# <<< happy-relay <<<
