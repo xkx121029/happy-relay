@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type CatalogModel } from '../api'
-import { providers, state, toast } from '../store'
+import { confirmDialog, providers, state, toast } from '../store'
 import { capLabel, kindLabel } from '../utils'
 
 const list = ref<CatalogModel[]>([])
@@ -130,7 +130,12 @@ async function remove(item: CatalogModel) {
     toast(`该模型已被 ${item.used_by} 个对外模型引用，请先解除引用`, 'error')
     return
   }
-  if (!confirm(`确定从模型库移除「${item.model_id}」？`)) return
+  const ok = await confirmDialog({
+    title: '从模型库移除',
+    message: `确定从模型库移除「${item.model_id}」？`,
+    confirmText: '移除',
+  })
+  if (!ok) return
   try {
     await api.deleteCatalog(item.id)
     toast('已移除')

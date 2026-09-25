@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api, type VideoTask } from '../api'
-import { toast } from '../store'
+import { confirmDialog, toast } from '../store'
 import { fmtTime } from '../utils'
 
 const list = ref<VideoTask[]>([])
@@ -32,7 +32,12 @@ onUnmounted(() => {
 })
 
 async function remove(t: VideoTask) {
-  if (!confirm(`确定删除任务 ${t.id}？生成中的任务也会从列表移除。`)) return
+  const ok = await confirmDialog({
+    title: '删除任务',
+    message: `确定删除任务 ${t.id}？生成中的任务也会从列表移除。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await api.deleteTask(t.id)
     toast('已删除')

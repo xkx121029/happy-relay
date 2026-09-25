@@ -1,29 +1,49 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Overview, type StatsReport } from '../api'
 import { capLabel, fmtNumber, fmtTime, relative } from '../utils'
-import { toast } from '../store'
+import { prefs, toast } from '../store'
 
 const router = useRouter()
 const data = ref<Overview | null>(null)
 const report = ref<StatsReport | null>(null)
 const loading = ref(true)
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const [overview, stats] = await Promise.all([api.getOverview(), api.getStats(14)])
     data.value = overview
     report.value = stats
   } catch (e: any) {
-    toast(e.message || '概览加载失败', 'error')
+    // 自动刷新失败时保持安静，避免反复弹出提示。
+    if (!silent) toast(e.message || '概览加载失败', 'error')
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
-onMounted(load)
+let refreshTimer: number | null = null
+
+// scheduleRefresh 按设置里的间隔静默刷新，0 表示关闭。
+function scheduleRefresh() {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+  refreshTimer = null
+  const sec = prefs.autoRefreshSec
+  if (sec > 0) {
+    refreshTimer = window.setInterval(() => load(true), sec * 1000)
+  }
+}
+
+onMounted(async () => {
+  await load()
+  scheduleRefresh()
+})
+
+onUnmounted(() => {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+})
 
 const daily = computed(() => [...(data.value?.daily || [])].reverse())
 const dailyMax = computed(() => Math.max(1, ...daily.value.map((d) => d.total)))

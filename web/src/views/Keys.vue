@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type APIKey } from '../api'
-import { models, toast } from '../store'
+import { confirmDialog, models, toast } from '../store'
 import { copyText, fmtTime, relative } from '../utils'
 
 const list = ref<APIKey[]>([])
@@ -98,7 +98,12 @@ async function save() {
 }
 
 async function remove(k: APIKey) {
-  if (!confirm(`确定删除秘钥「${k.name}」？使用它的客户端将立即失效。`)) return
+  const ok = await confirmDialog({
+    title: '删除秘钥',
+    message: `确定删除秘钥「${k.name}」？使用它的客户端将立即失效。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await api.deleteKey(k.id)
     toast('已删除')

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type UsageLog } from '../api'
-import { state, toast } from '../store'
+import { confirmDialog, state, toast } from '../store'
 import { capLabel, fmtTime, fmtNumber, prettyJSON } from '../utils'
 
 const list = ref<UsageLog[]>([])
@@ -36,7 +36,12 @@ async function load() {
 onMounted(load)
 
 async function clearAll() {
-  if (!confirm('确定清空所有调用日志？该操作不可恢复。')) return
+  const ok = await confirmDialog({
+    title: '清空调用日志',
+    message: '确定清空所有调用日志？该操作不可恢复。',
+    confirmText: '清空',
+  })
+  if (!ok) return
   try {
     await api.clearLogs()
     toast('日志已清空')

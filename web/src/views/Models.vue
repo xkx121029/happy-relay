@@ -12,7 +12,7 @@ import {
   type TemplateSpec,
   type VideoPreset,
 } from '../api'
-import { models, providers, state, toast } from '../store'
+import { confirmDialog, models, providers, state, toast } from '../store'
 import { capLabel, kindLabel, prettyJSON } from '../utils'
 
 const loading = ref(true)
@@ -259,7 +259,12 @@ async function save() {
 }
 
 async function remove(m: Model) {
-  if (!confirm(`确定删除模型「${m.name}」？`)) return
+  const ok = await confirmDialog({
+    title: '删除模型',
+    message: `确定删除模型「${m.name}」？使用它的客户端将立即无法调用。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await api.deleteModel(m.id)
     toast('已删除')

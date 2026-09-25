@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type Skill, type SkillParam } from '../api'
-import { skills, state, toast } from '../store'
+import { confirmDialog, skills, state, toast } from '../store'
 import { capLabel } from '../utils'
 
 const loading = ref(true)
@@ -196,7 +196,12 @@ async function generateWithAI() {
 }
 
 async function remove(sk: Skill) {
-  if (!confirm(`确定删除技能「${sk.name}」？`)) return
+  const ok = await confirmDialog({
+    title: '删除技能',
+    message: `确定删除技能「${sk.name}」？该操作不可恢复。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await api.deleteSkill(sk.id)
     toast('已删除')

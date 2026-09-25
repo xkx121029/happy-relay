@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type ProbeModel, type ProbeResult, type Provider, type ProviderHealth } from '../api'
-import { providers, state, toast } from '../store'
+import { confirmDialog, providers, state, toast } from '../store'
 import { capLabel, copyText, kindLabel, strategyLabel } from '../utils'
 
 const loading = ref(true)
@@ -170,7 +170,12 @@ async function save() {
 }
 
 async function remove(p: Provider) {
-  if (!confirm(`确定删除渠道「${p.name}」？仅绑定该渠道的模型会被一并删除，绑定多个渠道的模型会自动摘除它。`)) return
+  const ok = await confirmDialog({
+    title: '删除渠道',
+    message: `确定删除渠道「${p.name}」？仅绑定该渠道的模型会被一并删除，绑定多个渠道的模型会自动摘除它。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await api.deleteProvider(p.id)
     toast('已删除')

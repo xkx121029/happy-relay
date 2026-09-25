@@ -688,7 +688,14 @@ func (s *Server) pumpVideoTask(id int64) {
 
 // ---------- 日志 ----------
 
+// logUsage 写入调用日志。
+// 隐私模式下（设置里关闭「记录请求与响应体」）统一丢弃请求体与响应预览，
+// 这样所有调用点无需各自判断，也不会遗漏。
 func (s *Server) logUsage(l store.UsageLog) {
+	if !s.options().LogBody {
+		l.RequestBody = ""
+		l.ResponsePreview = ""
+	}
 	s.st.AddUsageLog(l)
 }
 
