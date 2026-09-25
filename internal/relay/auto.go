@@ -48,13 +48,13 @@ func AssessDifficulty(in *ChatInput) Difficulty {
 	score := 0
 	reasons := make([]string, 0, 4)
 	switch {
-	case textLen >= 4000:
+	case textLen >= 1200:
 		score += 3
 		reasons = append(reasons, "超长输入")
-	case textLen >= 1200:
+	case textLen >= 400:
 		score += 2
 		reasons = append(reasons, "长输入")
-	case textLen >= 300:
+	case textLen >= 100:
 		score += 1
 		reasons = append(reasons, "中等长度输入")
 	}
@@ -71,19 +71,26 @@ func AssessDifficulty(in *ChatInput) Difficulty {
 		reasons = append(reasons, "长系统提示")
 	}
 	lower := strings.ToLower(text.String())
+	keywordHits := 0
 	for _, kw := range hardKeywords {
 		if strings.Contains(lower, kw) {
-			score += 1
-			reasons = append(reasons, "含复杂任务关键词「"+kw+"」")
-			break
+			keywordHits++
 		}
+	}
+	switch {
+	case keywordHits >= 3:
+		score += 2
+		reasons = append(reasons, "涉及多个复杂任务关键词")
+	case keywordHits >= 1:
+		score += 1
+		reasons = append(reasons, "含复杂任务关键词")
 	}
 
 	tier := store.TierStandard
 	switch {
-	case score <= 1:
+	case score == 0:
 		tier = store.TierLight
-	case score <= 3:
+	case score <= 2:
 		tier = store.TierStandard
 	default:
 		tier = store.TierPro

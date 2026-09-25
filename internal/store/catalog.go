@@ -169,6 +169,8 @@ func (s *Store) ImportCatalogModels(providerID int64, items []CatalogModel) (int
 	for _, item := range items {
 		item.ProviderID = providerID
 		item.Source = "probe"
+		// 从探测结果导入的模型默认标记为可用，需要的话可在模型库里停用。
+		item.Enabled = true
 		if _, err := s.SaveCatalogModel(item); err != nil {
 			return created, updated, err
 		}
