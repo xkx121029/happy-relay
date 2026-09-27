@@ -1257,7 +1257,7 @@ const checkSummary = computed(() => {
                   <div class="fw-name">{{ s.title }}</div>
                   <div class="fw-desc">{{ s.desc }}</div>
                 </div>
-                <a v-if="!s.done && s.target" class="fw-jump" @click.prevent="gotoField(s.target!)">去配置 →</a>
+                <a v-if="!s.done && s.target" class="fw-jump" @click.prevent="s.target && gotoField(s.target)">去配置 →</a>
               </div>
             </div>
             <div
