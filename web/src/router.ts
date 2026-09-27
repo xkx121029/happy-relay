@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 // 懒加载各页面，减小首屏体积。
 const routes = [
   { path: '/', name: 'overview', component: () => import('./views/Overview.vue') },
+  { path: '/agent', name: 'agent', component: () => import('./views/Agent.vue') },
   { path: '/playground', name: 'playground', component: () => import('./views/Playground.vue') },
   { path: '/providers', name: 'providers', component: () => import('./views/Providers.vue') },
   { path: '/catalog', name: 'catalog', component: () => import('./views/Catalog.vue') },

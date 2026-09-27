@@ -19,6 +19,7 @@ const groups: { name: string; items: NavItem[] }[] = [
     name: '运行',
     items: [
       { path: '/', label: '概览', desc: '调用统计与近期动态', icon: 'grid' },
+      { path: '/agent', label: 'Agent', desc: '主模型指挥面板：自然语言查配置、建模型、改设置', icon: 'spark' },
       { path: '/playground', label: '调试台', desc: '直接在网页里对话、出图、出视频', icon: 'chat' },
       { path: '/tasks', label: '任务', desc: '视频任务的进度与结果', icon: 'film' },
     ],

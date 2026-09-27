@@ -4,6 +4,7 @@ defineProps<{ name: string }>()
 
 const PATHS: Record<string, string> = {
   grid: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
+  spark: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z',
   chat: 'M20 12a8 8 0 0 1-8 8H7l-4 3 1.2-4.2A8 8 0 1 1 20 12z',
   film: 'M4 5h16v14H4zM9 5v14M15 5v14M4 9.5h5M4 14.5h5M15 9.5h5M15 14.5h5',
   server: 'M4 5h16v6H4zM4 13h16v6H4zM8 8h.01M8 16h.01',
