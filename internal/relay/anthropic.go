@@ -380,7 +380,13 @@ func anthropicIntOf(v any) int {
 func anthropicUsage(u map[string]any) *Usage {
 	prompt := anthropicIntOf(u["input_tokens"])
 	completion := anthropicIntOf(u["output_tokens"])
-	return &Usage{PromptTokens: prompt, CompletionTokens: completion, TotalTokens: prompt + completion}
+	return &Usage{
+		PromptTokens:         prompt,
+		CompletionTokens:     completion,
+		TotalTokens:          prompt + completion,
+		CacheReadTokens:     anthropicIntOf(u["cache_read_input_tokens"]),
+		CacheCreationTokens:  anthropicIntOf(u["cache_creation_input_tokens"]),
+	}
 }
 
 func anthropicStopReason(v string) string {
@@ -444,5 +450,14 @@ func (a *AnthropicAdapter) Image(ctx context.Context, up Upstream, m store.Model
 }
 
 func (a *AnthropicAdapter) Embedding(ctx context.Context, up Upstream, m store.Model, in *EmbeddingInput) (*EmbeddingOutput, error) {
+	return nil, ErrUnsupported
+}
+
+// Anthropic 协议没有语音合成与识别接口，需要时请改用 OpenAI 兼容渠道。
+func (a *AnthropicAdapter) Speech(context.Context, Upstream, store.Model, *SpeechInput) (*SpeechOutput, error) {
+	return nil, ErrUnsupported
+}
+
+func (a *AnthropicAdapter) Transcription(context.Context, Upstream, store.Model, *TranscriptionInput) (*TranscriptionOutput, error) {
 	return nil, ErrUnsupported
 }

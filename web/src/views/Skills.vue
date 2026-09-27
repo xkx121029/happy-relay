@@ -226,7 +226,15 @@ async function remove(sk: Skill) {
       </div>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="table-wrap">
+      <table class="table">
+        <tbody>
+          <tr v-for="i in 4" :key="i">
+            <td v-for="j in 8" :key="j"><div class="skeleton" /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-else-if="skills.length" class="table-wrap">
       <table class="table">
@@ -236,7 +244,7 @@ async function remove(sk: Skill) {
             <th>slug</th>
             <th>分类</th>
             <th>能力</th>
-            <th>参数</th>
+            <th class="num">参数</th>
             <th>来源</th>
             <th>状态</th>
             <th style="text-align: right">操作</th>
@@ -246,12 +254,12 @@ async function remove(sk: Skill) {
           <tr v-for="sk in skills" :key="sk.id">
             <td>
               <div style="font-weight: 600">{{ sk.name }}</div>
-              <div class="muted clamp-1" style="font-size: 12px; max-width: 320px">{{ sk.description }}</div>
+              <div class="muted clamp-1" style="font-size: 11.5px; max-width: 320px">{{ sk.description }}</div>
             </td>
             <td class="mono dim">{{ sk.slug }}</td>
             <td><span class="badge">{{ sk.category }}</span></td>
             <td class="dim">{{ capLabel(sk.capability) }}</td>
-            <td class="dim">{{ sk.params?.length || 0 }}</td>
+            <td class="num dim">{{ sk.params?.length || 0 }}</td>
             <td>
               <span class="badge" :class="sk.builtin ? 'brand' : ''">{{ sk.builtin ? '预置' : '自定义' }}</span>
             </td>
@@ -261,7 +269,7 @@ async function remove(sk: Skill) {
               </span>
             </td>
             <td>
-              <div class="row" style="justify-content: flex-end; gap: 6px">
+              <div class="row" style="justify-content: flex-end; gap: 4px">
                 <button class="btn btn-sm btn-ghost" @click="openEdit(sk)">编辑</button>
                 <button
                   v-if="!sk.builtin"
@@ -279,7 +287,12 @@ async function remove(sk: Skill) {
     </div>
 
     <div v-else class="card empty">
+      <div class="empty-icon">⌘</div>
       <div class="big">还没有技能</div>
+      <div>技能是带参数的提示词模板，可在调试台一键套用。</div>
+      <div class="empty-cta">
+        <button class="btn btn-primary btn-sm" @click="openCreate">新建技能</button>
+      </div>
     </div>
 
     <Modal
@@ -287,6 +300,9 @@ async function remove(sk: Skill) {
       wide
       :title="form.id ? '编辑技能' : '新建技能'"
       subtitle="技能模板用 {{参数 key}} 占位，调试台套用时替换成实际输入。"
+      submit-on-enter
+      :busy="saving"
+      @submit="save"
       @close="editing = false"
     >
       <div class="grid cols-2" style="gap: 0 18px">

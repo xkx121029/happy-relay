@@ -7,6 +7,7 @@ const routes = [
   { path: '/providers', name: 'providers', component: () => import('./views/Providers.vue') },
   { path: '/catalog', name: 'catalog', component: () => import('./views/Catalog.vue') },
   { path: '/models', name: 'models', component: () => import('./views/Models.vue') },
+  { path: '/builtin', name: 'builtin', component: () => import('./views/Builtin.vue') },
   { path: '/keys', name: 'keys', component: () => import('./views/Keys.vue') },
   { path: '/skills', name: 'skills', component: () => import('./views/Skills.vue') },
   { path: '/tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },

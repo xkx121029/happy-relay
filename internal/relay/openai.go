@@ -1,8 +1,11 @@
 package relay
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -25,16 +28,75 @@ func authHeader(up Upstream) map[string]string {
 
 // buildBody 以原始请求体为基底，套用模型默认参数并替换上游模型名。
 // 这样未知字段也能原样透传给上游，兼容各家扩展参数。
+// 若调用方只填了结构化的 in.Messages（程序化调用，Raw 为空），
+// 这里兜底把消息序列化成 OpenAI wire 格式，避免上游收到空 messages。
 func buildBody(m store.Model, in *ChatInput) map[string]any {
-	body := make(map[string]any, len(in.Raw)+len(in.Options)+1)
+	body := make(map[string]any, len(in.Raw)+len(in.Options)+2)
 	for k, v := range in.Raw {
 		body[k] = v
 	}
 	for k, v := range in.Options {
 		body[k] = v
 	}
+	if _, ok := body["messages"]; !ok && len(in.Messages) > 0 {
+		body["messages"] = openAIMessages(in.Messages)
+	}
 	body["model"] = m.UpstreamName
 	return body
+}
+
+// openAIMessages 把归一化消息序列化回 OpenAI chat completions 的 wire 格式。
+func openAIMessages(msgs []ChatMessage) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for _, msg := range msgs {
+		m := map[string]any{"role": msg.Role}
+		switch {
+		case hasImagePart(msg.Parts):
+			// 多模态消息：content 是分段数组。
+			parts := make([]map[string]any, 0, len(msg.Parts))
+			for _, p := range msg.Parts {
+				if p.Type == "image" {
+					url := p.Remote
+					if url == "" && len(p.Data) > 0 {
+						url = "data:" + p.MIME + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
+					}
+					parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+				} else {
+					parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+				}
+			}
+			m["content"] = parts
+		default:
+			m["content"] = msg.Content
+		}
+		if msg.Name != "" {
+			m["name"] = msg.Name
+		}
+		if msg.ToolCallID != "" {
+			m["tool_call_id"] = msg.ToolCallID
+		}
+		if len(msg.ToolCalls) > 0 {
+			tcs := make([]map[string]any, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				tcs = append(tcs, map[string]any{
+					"id": tc.ID, "type": "function",
+					"function": map[string]any{"name": tc.Name, "arguments": tc.Arguments},
+				})
+			}
+			m["tool_calls"] = tcs
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func hasImagePart(parts []ContentPart) bool {
+	for _, p := range parts {
+		if p.Type == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *OpenAIAdapter) Chat(ctx context.Context, up Upstream, m store.Model, in *ChatInput, emit StreamFunc) (*ChatOutput, error) {
@@ -328,6 +390,87 @@ func (a *OpenAIAdapter) Embedding(ctx context.Context, up Upstream, m store.Mode
 	return out, nil
 }
 
+// ---------- 语音 ----------
+
+// Speech 调用文本转语音接口。上游返回的是音频字节流，
+// 这里只做状态码校验就把流交出去，不做解析，避免大音频占内存。
+func (a *OpenAIAdapter) Speech(ctx context.Context, up Upstream, m store.Model, in *SpeechInput) (*SpeechOutput, error) {
+	body := map[string]any{"model": m.UpstreamName, "input": in.Input}
+	if in.Voice != "" {
+		body["voice"] = in.Voice
+	}
+	if in.Format != "" {
+		body["response_format"] = in.Format
+	}
+	if in.Speed > 0 {
+		body["speed"] = in.Speed
+	}
+	for k, v := range in.Options {
+		if _, exists := body[k]; !exists {
+			body[k] = v
+		}
+	}
+	resp, err := doJSON(ctx, up, "POST", a.url(up, "/audio/speech"), authHeader(up), body)
+	if err != nil {
+		return nil, err
+	}
+	ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if ct == "" {
+		ct = "audio/mpeg"
+	}
+	return &SpeechOutput{ContentType: ct, Body: resp.Body}, nil
+}
+
+// Transcription 调用语音转文字接口。
+// 请求以 multipart 重新编码，因此这里要把客户端传来的对外模型名换成本次命中的上游模型名；
+// 其余字段原样带上，language、prompt、response_format 等参数不会丢失。
+func (a *OpenAIAdapter) Transcription(ctx context.Context, up Upstream, m store.Model, in *TranscriptionInput) (*TranscriptionOutput, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if len(in.FileData) > 0 {
+		name := in.FileName
+		if name == "" {
+			name = "audio.mp3"
+		}
+		fw, err := mw.CreateFormFile("file", name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := fw.Write(in.FileData); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.WriteField("model", m.UpstreamName); err != nil {
+		return nil, err
+	}
+	for k, v := range in.Options {
+		if k == "model" || k == "file" {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			b, _ := json.Marshal(v)
+			s = string(b)
+		}
+		if err := mw.WriteField(k, s); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+	resp, err := doRaw(ctx, up, "POST", a.url(up, "/audio/transcriptions"),
+		mw.FormDataContentType(), authHeader(up), buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	raw, err := decodeJSONBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+	return &TranscriptionOutput{Text: jsonPathString(raw, "text"), Raw: raw}, nil
+}
+
 // ---------- 响应解析 ----------
 
 func parseUsage(u map[string]any) *Usage {
@@ -341,6 +484,18 @@ func parseUsage(u map[string]any) *Usage {
 		PromptTokens:     get("prompt_tokens"),
 		CompletionTokens: get("completion_tokens"),
 		TotalTokens:      get("total_tokens"),
+		// Anthropic 原生 / 透传上游常把缓存字段放在顶层。
+		CacheReadTokens:     get("cache_read_input_tokens"),
+		CacheCreationTokens: get("cache_creation_input_tokens"),
+	}
+	// OpenAI 系把缓存命中放到 prompt_tokens_details 里。
+	if det, ok := u["prompt_tokens_details"].(map[string]any); ok {
+		if v, ok := det["cached_tokens"].(float64); ok && v > 0 {
+			usage.CacheReadTokens = int(v)
+		}
+		if v, ok := det["cache_read_input_tokens"].(float64); ok && v > 0 {
+			usage.CacheReadTokens = int(v)
+		}
 	}
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

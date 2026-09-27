@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type UsageLog } from '../api'
 import { confirmDialog, state, toast } from '../store'
@@ -7,9 +7,41 @@ import { capLabel, fmtTime, fmtNumber, prettyJSON } from '../utils'
 
 const list = ref<UsageLog[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const capFilter = ref('')
 const keyword = ref('')
 const detail = ref<UsageLog | null>(null)
+// 是否还有更早的日志：最近一次查询返回满页就假定还有，返回空页则到底。
+const PAGE = 200
+const hasMore = ref(false)
+// 自动刷新：开启后每 10 秒拉一次第一页（会重置分页位置）。
+const autoRefresh = ref(false)
+let autoTimer: number | null = null
+
+// 详情弹窗里的输入/输出切换：默认先看输入，没有请求体时直接看输出。
+const detailTab = ref<'req' | 'res'>('req')
+watch(detail, (v) => {
+  if (v) detailTab.value = v.request_body ? 'req' : 'res'
+})
+
+// 保存策略从 meta 的 runtime 快照里读，页面上不提供修改入口（去设置页改）。
+const runtime = computed(() => state.meta?.runtime?.values)
+const retentionLabel = computed(() => {
+  const r = runtime.value
+  if (!r) return ''
+  return r.log_retention_days > 0 ? `${r.log_retention_days} 天` : '不限时'
+})
+
+async function copyBody() {
+  const text = detailTab.value === 'req' ? detail.value?.request_body : detail.value?.response_preview
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    toast('已复制到剪贴板')
+  } catch {
+    toast('复制失败：浏览器未授权剪贴板', 'error')
+  }
+}
 
 const capOptions = computed(
   () =>
@@ -25,12 +57,86 @@ async function load() {
   loading.value = true
   try {
     if (!state.meta) state.meta = await api.getMeta()
-    list.value = await api.listLogs({ limit: 200, capability: capFilter.value, q: keyword.value.trim() })
+    const rows = await api.listLogs({ limit: PAGE, capability: capFilter.value, q: keyword.value.trim() })
+    list.value = rows
+    hasMore.value = rows.length >= PAGE
   } catch (e: any) {
     toast(e.message || '加载失败', 'error')
   } finally {
     loading.value = false
   }
+}
+
+// loadMore 游标分页：以已加载最后一条的 id 为游标继续往更早翻。
+async function loadMore() {
+  if (loadingMore.value || !list.value.length) return
+  loadingMore.value = true
+  try {
+    const before = list.value[list.value.length - 1].id
+    const rows = await api.listLogs({
+      limit: PAGE,
+      before,
+      capability: capFilter.value,
+      q: keyword.value.trim(),
+    })
+    list.value.push(...rows)
+    hasMore.value = rows.length >= PAGE
+    if (!rows.length) toast('没有更早的日志了')
+  } catch (e: any) {
+    toast(e.message || '加载失败', 'error')
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+function setAutoRefresh(on: boolean) {
+  autoRefresh.value = on
+  if (autoTimer !== null) {
+    clearInterval(autoTimer)
+    autoTimer = null
+  }
+  if (on) autoTimer = window.setInterval(load, 10_000)
+}
+
+onUnmounted(() => setAutoRefresh(false))
+
+// 导出当前已加载的日志为 CSV（带 BOM，Excel 打开不乱码）。正文太长不入表，只导结构化字段。
+function exportCSV() {
+  if (!list.value.length) return
+  const esc = (v: unknown) => {
+    const s = String(v ?? '')
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+  }
+  const head = ['时间', '能力', '模型', '渠道', '秘钥', '状态', '流式', '耗时ms', '输入Token', '输出Token', '花费', '错误']
+  const lines = [head.map(esc).join(',')]
+  for (const l of list.value) {
+    lines.push(
+      [
+        new Date(l.created_at).toLocaleString('zh-CN', { hour12: false }),
+        capLabel(l.capability),
+        l.model,
+        l.provider_name || '',
+        l.api_key_name || '',
+        ok(l) ? '成功' : '失败',
+        l.stream ? '是' : '否',
+        l.latency_ms,
+        l.prompt_tokens,
+        l.completion_tokens,
+        l.cost ?? '',
+        l.error || '',
+      ]
+        .map(esc)
+        .join(','),
+    )
+  }
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `relay-logs-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  toast(`已导出 ${list.value.length} 条日志`)
 }
 
 onMounted(load)
@@ -61,30 +167,54 @@ function ok(l: UsageLog) {
     <div class="page-head">
       <div>
         <h2>调用日志</h2>
-        <p>记录每次调用的模型、渠道、耗时与 token 用量。</p>
+        <p>记录每次调用的完整输入输出、模型、渠道、耗时与 token 用量。</p>
       </div>
       <div class="row">
+        <button class="btn btn-sm" :class="autoRefresh ? '' : 'btn-ghost'" @click="setAutoRefresh(!autoRefresh)">
+          {{ autoRefresh ? '自动刷新中 · 10s' : '自动刷新' }}
+        </button>
+        <button class="btn btn-sm" :disabled="!list.length" @click="exportCSV">导出 CSV</button>
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
         <button class="btn btn-sm btn-danger" @click="clearAll">清空日志</button>
       </div>
     </div>
 
+    <div v-if="runtime" class="card log-policy">
+      <span class="muted" style="font-size: 12.5px">保存策略</span>
+      <span class="badge" :class="runtime.log_body ? 'ok' : 'danger'">
+        {{ runtime.log_body ? '记录完整输入输出' : '隐私模式：不记录正文' }}
+      </span>
+      <span class="badge">保留 {{ retentionLabel }}</span>
+      <span class="badge">条数上限 {{ fmtNumber(runtime.max_log_rows) }}</span>
+      <span class="badge">单条体积上限 {{ runtime.log_body_limit_kb }} KB</span>
+      <RouterLink class="btn btn-sm btn-ghost" to="/settings" style="margin-left: auto">去调整</RouterLink>
+    </div>
+
     <div class="toolbar">
-      <select v-model="capFilter" class="select" style="width: 160px" @change="load">
+      <select v-model="capFilter" class="select" style="width: 150px" @change="load">
         <option value="">全部能力</option>
         <option v-for="c in capOptions" :key="c.value" :value="c.value">{{ c.label }}</option>
       </select>
       <input
         v-model="keyword"
         class="input"
-        style="width: 260px"
+        style="width: 250px"
         placeholder="搜索模型 / 渠道 / 秘钥 / 错误"
         @keydown.enter="load"
       />
       <button class="btn btn-sm" @click="load">查询</button>
+      <span v-if="list.length" class="muted" style="font-size: 12px">共 {{ list.length }} 条</span>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="table-wrap">
+      <table class="table">
+        <tbody>
+          <tr v-for="i in 6" :key="i">
+            <td v-for="j in 9" :key="j"><div class="skeleton" /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-else-if="list.length" class="table-wrap">
       <table class="table">
@@ -96,8 +226,8 @@ function ok(l: UsageLog) {
             <th>渠道</th>
             <th>秘钥</th>
             <th>状态</th>
-            <th>耗时</th>
-            <th>Token</th>
+            <th class="num">耗时</th>
+            <th class="num">Token</th>
             <th style="text-align: right">详情</th>
           </tr>
         </thead>
@@ -112,8 +242,8 @@ function ok(l: UsageLog) {
               <span class="badge" :class="ok(l) ? 'ok' : 'danger'">{{ ok(l) ? '成功' : '失败' }}</span>
               <span v-if="l.stream" class="badge" style="margin-left: 4px">流式</span>
             </td>
-            <td class="muted nowrap">{{ l.latency_ms }} ms</td>
-            <td class="muted nowrap">{{ fmtNumber(l.prompt_tokens + l.completion_tokens) }}</td>
+            <td class="num muted nowrap">{{ l.latency_ms }} ms</td>
+            <td class="num muted nowrap">{{ fmtNumber(l.prompt_tokens + l.completion_tokens) }}</td>
             <td>
               <div class="row" style="justify-content: flex-end">
                 <button class="btn btn-sm btn-ghost" @click="detail = l">查看</button>
@@ -122,11 +252,41 @@ function ok(l: UsageLog) {
           </tr>
         </tbody>
       </table>
+      <div
+        v-if="hasMore || list.length >= PAGE"
+        class="row"
+        style="justify-content: center; padding: 12px; border-top: 1px solid var(--border)"
+      >
+        <button class="btn btn-sm" :disabled="loadingMore" @click="loadMore">
+          {{ loadingMore ? '加载中…' : '加载更早日志' }}
+        </button>
+        <span class="muted" style="font-size: 12px; margin-left: 8px">已显示 {{ list.length }} 条</span>
+      </div>
     </div>
 
     <div v-else class="card empty">
-      <div class="big">暂无日志</div>
-      <div>发起一次调用后这里会记录明细。</div>
+      <div class="empty-icon">≡</div>
+      <div class="big">
+        {{ keyword || capFilter ? '没有匹配的日志' : '暂无日志' }}
+      </div>
+      <div v-if="keyword || capFilter">换个关键词或清空筛选条件再试。</div>
+      <div v-else>发起一次调用后这里会记录明细。</div>
+      <div v-if="keyword || capFilter" class="empty-cta">
+        <button
+          class="btn btn-sm"
+          @click="
+            () => {
+              keyword = ''
+              capFilter = ''
+            }
+          "
+        >
+          清空筛选条件
+        </button>
+      </div>
+      <div v-else class="empty-cta">
+        <RouterLink class="btn btn-sm" to="/playground">去调试台跑一次</RouterLink>
+      </div>
     </div>
 
     <Modal v-if="detail" wide title="调用详情" :subtitle="fmtTime(detail.created_at)" @close="detail = null">
@@ -138,7 +298,10 @@ function ok(l: UsageLog) {
         <dt>状态 / 耗时</dt>
         <dd>{{ ok(detail) ? '成功' : '失败' }} · {{ detail.latency_ms }} ms{{ detail.stream ? ' · 流式' : '' }}</dd>
         <dt>Token</dt>
-        <dd>输入 {{ detail.prompt_tokens }} / 输出 {{ detail.completion_tokens }}</dd>
+        <dd>
+          输入 {{ detail.prompt_tokens }} / 输出 {{ detail.completion_tokens }}
+          <template v-if="detail.cost"> · 约 ¥{{ detail.cost.toFixed(4) }}</template>
+        </dd>
       </div>
 
       <div v-if="detail.error" class="field">
@@ -146,14 +309,30 @@ function ok(l: UsageLog) {
         <pre class="code-block" style="color: var(--danger)">{{ detail.error }}</pre>
       </div>
 
-      <div v-if="detail.request_body" class="field">
-        <div class="field-label">请求体</div>
-        <pre class="code-block">{{ prettyJSON(detail.request_body) }}</pre>
-      </div>
-
-      <div v-if="detail.response_preview" class="field">
-        <div class="field-label">响应预览</div>
-        <pre class="code-block">{{ detail.response_preview }}</pre>
+      <div v-if="detail.request_body || detail.response_preview" class="field">
+        <div class="row" style="justify-content: space-between; margin-bottom: 8px">
+          <div class="row" style="gap: 6px">
+            <button
+              v-if="detail.request_body"
+              class="btn btn-sm"
+              :class="detailTab === 'req' ? '' : 'btn-ghost'"
+              @click="detailTab = 'req'"
+            >
+              输入 · 请求体
+            </button>
+            <button
+              v-if="detail.response_preview"
+              class="btn btn-sm"
+              :class="detailTab === 'res' ? '' : 'btn-ghost'"
+              @click="detailTab = 'res'"
+            >
+              输出 · 模型回复
+            </button>
+          </div>
+          <button class="btn btn-sm btn-ghost" @click="copyBody">复制</button>
+        </div>
+        <pre v-if="detailTab === 'req'" class="code-block log-body">{{ prettyJSON(detail.request_body || '') }}</pre>
+        <pre v-else class="code-block log-body">{{ detail.response_preview }}</pre>
       </div>
     </Modal>
   </div>

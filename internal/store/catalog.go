@@ -26,12 +26,17 @@ type CatalogModel struct {
 
 	// ContextLength 是该上游模型的上下文窗口（token），探测不到时为 0。
 	ContextLength int `json:"context_length,omitempty"`
+	// InputModalities / OutputModalities 是该上游模型的输入与输出模态，
+	// 如 ["text","image"] / ["text"]；用于按模态匹配模型。
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
 	// UsedBy 表示有多少个对外模型引用了它。
 	UsedBy int `json:"used_by,omitempty"`
 }
 
 const catalogSelect = `SELECT c.id,c.provider_id,COALESCE(p.name,''),COALESCE(p.kind,''),c.model_id,
-	c.capability,c.source,c.enabled,c.remark,c.created_at,c.updated_at,c.context_length FROM catalog_models c
+	c.capability,c.source,c.enabled,c.remark,c.created_at,c.updated_at,c.context_length,
+	c.input_modalities,c.output_modalities FROM catalog_models c
 	LEFT JOIN providers p ON p.id=c.provider_id`
 
 // ListCatalogModels 列出模型库条目，可按渠道与能力过滤。
@@ -96,11 +101,14 @@ func (s *Store) getCatalogByKey(providerID int64, modelID string) (CatalogModel,
 func scanCatalog(sc scanner) (CatalogModel, error) {
 	var m CatalogModel
 	var enabled int
+	var inputs, outputs string
 	if err := sc.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderKind, &m.ModelID,
 		&m.Capability, &m.Source, &enabled, &m.Remark, &m.CreatedAt, &m.UpdatedAt,
-		&m.ContextLength); err != nil {
+		&m.ContextLength, &inputs, &outputs); err != nil {
 		return CatalogModel{}, err
 	}
+	m.InputModalities = CleanModalities(unmarshal(inputs, []string{}))
+	m.OutputModalities = CleanModalities(unmarshal(outputs, []string{}))
 	m.Enabled = enabled == 1
 	return m, nil
 }
@@ -125,24 +133,29 @@ func (s *Store) SaveCatalogModel(m CatalogModel) (CatalogModel, error) {
 	ts := now()
 	if m.ID == 0 {
 		if _, err := s.db.Exec(`INSERT INTO catalog_models
-			(provider_id,model_id,capability,source,enabled,remark,context_length,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?)
+			(provider_id,model_id,capability,source,enabled,remark,context_length,
+			 input_modalities,output_modalities,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(provider_id,model_id) DO UPDATE SET
 			  capability=excluded.capability, enabled=excluded.enabled,
 			  remark=excluded.remark, updated_at=excluded.updated_at,
 			  -- 探测不到上下文时保留原有值，避免把已知信息覆盖成未知
 			  context_length=CASE WHEN excluded.context_length>0
-			    THEN excluded.context_length ELSE context_length END`,
+			    THEN excluded.context_length ELSE context_length END,
+			  input_modalities=excluded.input_modalities,
+			  output_modalities=excluded.output_modalities`,
 			m.ProviderID, m.ModelID, m.Capability, m.Source, boolInt(m.Enabled), m.Remark,
-			m.ContextLength, ts, ts); err != nil {
+			m.ContextLength, marshal(CleanModalities(m.InputModalities)),
+			marshal(CleanModalities(m.OutputModalities)), ts, ts); err != nil {
 			return m, err
 		}
 		return s.getCatalogByKey(m.ProviderID, m.ModelID)
 	}
 	if _, err := s.db.Exec(`UPDATE catalog_models SET provider_id=?,model_id=?,capability=?,
-		enabled=?,remark=?,context_length=?,updated_at=? WHERE id=?`,
+		enabled=?,remark=?,context_length=?,input_modalities=?,output_modalities=?,updated_at=? WHERE id=?`,
 		m.ProviderID, m.ModelID, m.Capability, boolInt(m.Enabled), m.Remark,
-		m.ContextLength, ts, m.ID); err != nil {
+		m.ContextLength, marshal(CleanModalities(m.InputModalities)),
+		marshal(CleanModalities(m.OutputModalities)), ts, m.ID); err != nil {
 		return m, err
 	}
 	return s.GetCatalogModel(m.ID)
@@ -171,16 +184,21 @@ func (s *Store) catalogContextIndex() map[string]int {
 
 // fillCatalogContext 用模型库里探测到的上下文长度补全模型。
 // 模型自己声明了上下文时以声明值为准，这里不覆盖。
+// 聚合模型取全部上游里的最小窗口做容量规划——校验按最差情况算，
+// 才不会把超出小窗口上游容量的请求放过去、最后由上游报难懂的错。
 func fillCatalogContext(m *Model, index map[string]int) {
 	if m == nil || m.Config.ContextLength > 0 || len(index) == 0 {
 		return
 	}
+	min := 0
 	for _, in := range m.AllInputs() {
 		if n := index[catalogKey(in.ProviderID, in.UpstreamName)]; n > 0 {
-			m.CatalogContextLength = n
-			return
+			if min == 0 || n < min {
+				min = n
+			}
 		}
 	}
+	m.CatalogContextLength = min
 }
 
 func (s *Store) DeleteCatalogModel(id int64) error {

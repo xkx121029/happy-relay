@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"happy-relay/internal/store"
 )
@@ -20,8 +22,11 @@ type Upstream struct {
 	APIKey   string
 	Headers  map[string]string
 	Provider store.Provider
-	// Client 由引擎按渠道超时配置注入。
+	// Client 由引擎注入的共享连接池客户端（全部候选复用同一个实例）。
 	Client *http.Client
+	// Timeout 是单次调用的总超时（含流式读取），由引擎按渠道超时配置注入；
+	// 调用方用它给请求 context 叠加 deadline（共享客户端不能挂 Client.Timeout）。
+	Timeout time.Duration
 }
 
 // Usage 是统一的用量统计。
@@ -29,6 +34,9 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// 缓存相关 token（Prompt Caching）：命中缓存的输入不重复计费、也不重复占用上下文。
+	CacheReadTokens     int `json:"cache_read_tokens"`
+	CacheCreationTokens int `json:"cache_creation_tokens"`
 }
 
 // ContentPart 是对话中的一段内容，已归一化为文本或图片。
@@ -77,6 +85,9 @@ type ChatOutput struct {
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        Usage
+	// UpstreamName 是实际命中的上游模型名（聚合模型的多个上游之一），
+	// 由引擎在成功时回填，仅供面板 meta 展示，不参与对外协议。
+	UpstreamName string
 }
 
 // StreamDelta 是流式过程中的一次增量。
@@ -140,6 +151,42 @@ type EmbeddingInput struct {
 type EmbeddingOutput struct {
 	Vectors [][]float32
 	Usage   Usage
+}
+
+// SpeechInput 是文本转语音（TTS）的入参。
+type SpeechInput struct {
+	Model   string
+	Input   string
+	Voice   string
+	Format  string  // response_format：mp3 / wav / opus 等
+	Speed   float64 // 语速倍率，0 表示不传
+	Options map[string]any
+}
+
+// SpeechOutput 是语音合成结果：上游直接返回音频字节流，由调用方负责关闭。
+// 音频不解析、不落库，原样透传给客户端。
+type SpeechOutput struct {
+	ContentType string
+	Body        io.ReadCloser
+}
+
+// TranscriptionInput 是语音转文字（ASR）的入参。
+// 客户端以 multipart/form-data 上传音频，这里把文件与其余文本字段拆开保存，
+// 转发时再重新编码，这样既能把 model 换成本次命中的上游模型名，也能保留全部参数。
+type TranscriptionInput struct {
+	Model    string
+	FileName string
+	// FileData 是第一个音频文件的原始字节。
+	FileData []byte
+	// Options 是除 model 与 file 之外的文本字段（language、prompt、response_format 等）。
+	Options map[string]any
+}
+
+// TranscriptionOutput 是语音识别结果。
+type TranscriptionOutput struct {
+	Text string
+	// Raw 保留上游完整响应：verbose_json 等模式下还带分段、时长等字段。
+	Raw map[string]any
 }
 
 // ---------- 请求解析 ----------
@@ -215,7 +262,9 @@ func ParseChatInput(raw map[string]any) *ChatInput {
 	}
 	for k, v := range raw {
 		switch k {
-		case "model", "messages", "stream", "stream_options", "user":
+		case "model", "messages", "stream", "stream_options", "user",
+			// 面板调试台专用的「指定上游」字段，不应透传给上游。
+			"provider_id", "upstream_name":
 			continue
 		}
 		in.Options[k] = v

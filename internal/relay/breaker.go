@@ -141,10 +141,12 @@ func (e *Engine) filterOpen(ps []store.Provider) []store.Provider {
 	return out
 }
 
-// orderForTry 先按策略排序，再剔除熔断中的渠道；
+// orderForTry 先按策略排序，再做负载再平衡，最后剔除熔断中的渠道；
 // 若全部处于熔断状态则忽略熔断，避免出现完全不可用的死局。
 func (e *Engine) orderForTry(m store.Model, ps []store.Provider) []store.Provider {
 	ordered := e.orderProviders(m, ps)
+	mode, bad, stats := e.balance()
+	ordered = rebalanceProviders(ordered, mode, stats, float64(bad))
 	if filtered := e.filterOpen(ordered); len(filtered) > 0 {
 		return filtered
 	}

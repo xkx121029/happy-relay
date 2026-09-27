@@ -34,6 +34,7 @@ function blank() {
     strategy: 'round_robin',
     timeout_sec: 600,
     enabled: true,
+    no_version_path: false,
     remark: '',
   }
 }
@@ -115,6 +116,7 @@ function openEdit(p: Provider) {
     strategy: p.strategy,
     timeout_sec: p.timeout_sec,
     enabled: p.enabled,
+    no_version_path: p.no_version_path,
     remark: p.remark,
   })
   editing.value = true
@@ -147,6 +149,7 @@ function buildPayload() {
     strategy: form.strategy,
     timeout_sec: Number(form.timeout_sec) || 600,
     enabled: form.enabled,
+    no_version_path: form.no_version_path,
     remark: form.remark.trim(),
   }
 }
@@ -242,7 +245,7 @@ async function testForm() {
     const all: ProbeResult[] = []
     for (const url of urls) {
       try {
-        const res = await api.testProvider({ kind: form.kind, base_url: url, api_key: key })
+        const res = await api.testProvider({ kind: form.kind, base_url: url, api_key: key, no_version_path: form.no_version_path })
         all.push(...(res.results || []))
       } catch (e: any) {
         all.push({ url, ok: false, status: 0, latency_ms: 0, detail: e.message || '请求失败' })
@@ -324,7 +327,15 @@ function capBadge(capability: string) {
       </div>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="table-wrap">
+      <table class="table">
+        <tbody>
+          <tr v-for="i in 4" :key="i">
+            <td v-for="j in 8" :key="j"><div class="skeleton" /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-else-if="providers.length" class="table-wrap">
       <table class="table">
@@ -334,7 +345,7 @@ function capBadge(capability: string) {
             <th>类型</th>
             <th>入口 / 密钥</th>
             <th>策略</th>
-            <th>模型</th>
+            <th class="num">模型</th>
             <th>健康</th>
             <th>状态</th>
             <th style="text-align: right">操作</th>
@@ -344,14 +355,14 @@ function capBadge(capability: string) {
           <tr v-for="p in providers" :key="p.id">
             <td>
               <div style="font-weight: 600">{{ p.name }}</div>
-              <div v-if="p.remark" class="muted clamp-1" style="font-size: 12px; max-width: 220px">
+              <div v-if="p.remark" class="muted clamp-1" style="font-size: 11.5px; max-width: 220px">
                 {{ p.remark }}
               </div>
             </td>
             <td><span class="badge">{{ kindLabel(p.kind) }}</span></td>
             <td class="muted nowrap">{{ p.base_urls.length }} 入口 / {{ p.api_keys.length }} 密钥</td>
             <td class="dim">{{ strategyLabel(p.strategy) }}</td>
-            <td class="dim">{{ p.model_count ?? 0 }}</td>
+            <td class="num dim">{{ p.model_count ?? 0 }}</td>
             <td>
               <span v-if="health[p.id]?.open" class="badge danger" :title="health[p.id]?.last_error">
                 熔断 {{ health[p.id]?.remain_sec }}s
@@ -367,7 +378,7 @@ function capBadge(capability: string) {
               </span>
             </td>
             <td>
-              <div class="row" style="justify-content: flex-end; gap: 6px">
+              <div class="row" style="justify-content: flex-end; gap: 4px">
                 <button class="btn btn-sm btn-ghost" @click="testSaved(p)">获取模型</button>
                 <button v-if="health[p.id]?.open" class="btn btn-sm btn-ghost" @click="resetHealth(p)">
                   恢复
@@ -384,9 +395,12 @@ function capBadge(capability: string) {
     </div>
 
     <div v-else class="card empty">
+      <div class="empty-icon">⇅</div>
       <div class="big">还没有渠道</div>
       <div>先接入一个上游服务商，再在「模型」里把它的模型暴露出去。</div>
-      <div style="margin-top: 16px"><button class="btn btn-primary" @click="openCreate">新建渠道</button></div>
+      <div class="empty-cta">
+        <button class="btn btn-primary btn-sm" @click="openCreate">新建渠道</button>
+      </div>
     </div>
 
     <!-- 编辑弹窗 -->
@@ -395,6 +409,9 @@ function capBadge(capability: string) {
       wide
       :title="form.id ? '编辑渠道' : '新建渠道'"
       subtitle="入口地址与密钥会做笛卡尔积组合，配合调度策略使用。"
+      submit-on-enter
+      :busy="saving"
+      @submit="save"
       @close="editing = false"
     >
       <div class="grid cols-2" style="gap: 0 18px">
@@ -422,6 +439,12 @@ function capBadge(capability: string) {
         <button class="btn btn-sm" @click="addRow(form.base_urls)">+ 添加入口</button>
         <div class="hint">OpenAI 兼容类型可只填域名，会自动补 /v1；留空则使用官方默认地址。</div>
       </div>
+
+      <label class="switch" style="margin-top: 4px">
+        <input v-model="form.no_version_path" type="checkbox" />
+        <span class="track" />
+        <span>上游接口无 /v1 版本前缀（如 GitHub Models：<span class="mono">models.inference.ai.azure.com</span>）</span>
+      </label>
 
       <div class="field">
         <label>密钥</label>

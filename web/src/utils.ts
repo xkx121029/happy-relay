@@ -159,6 +159,8 @@ const CAP_LABELS: Record<string, string> = {
   image: '图片生成',
   video: '视频生成',
   embedding: '文本向量',
+  speech: '语音合成',
+  transcription: '语音识别',
   connector: '连接器',
 }
 
@@ -178,6 +180,7 @@ export function strategyLabel(s: string): string {
 
 const KIND_LABELS: Record<string, string> = {
   openai: 'OpenAI 兼容',
+  zhipu: '智谱 GLM',
   gemini: 'Google Gemini',
   anthropic: 'Anthropic Claude',
   template: '自定义模板',

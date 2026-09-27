@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,91 @@ import (
 
 // panelKey 是面板调试台使用的虚拟秘钥：不受模型白名单限制，也不参与秘钥校验。
 var panelKey = store.APIKey{Name: "面板调试台", Enabled: true}
+
+// takeUpstreamPin 取出调试台指定的上游参数，并从请求体里移除，
+// 避免这两个仅供面板使用的字段被透传给上游。
+func takeUpstreamPin(raw map[string]any) (int64, string) {
+	if raw == nil {
+		return 0, ""
+	}
+	var providerID int64
+	switch v := raw["provider_id"].(type) {
+	case float64:
+		providerID = int64(v)
+	case int:
+		providerID = int64(v)
+	case string:
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			providerID = n
+		}
+	}
+	name, _ := raw["upstream_name"].(string)
+	delete(raw, "provider_id")
+	delete(raw, "upstream_name")
+	return providerID, strings.TrimSpace(name)
+}
+
+// pinUpstream 按调试台指定的渠道 / 上游模型收窄模型的输入列表。
+//
+// 支持两种粒度：
+//   - 只给 provider_id：钉住该渠道，保留它下面的全部上游模型；
+//   - 同时给 provider_id 与 upstream_name：精确到某一条上游。
+//
+// 钉住之后失败不会再切到其它上游，拿到的就是目标上游真实的报错，便于定位问题。
+// 指定的组合即使不在模型配置里也允许尝试（方便调试尚未登记的上游）。
+//
+// 只有面板调试台（withMeta）会走到这里，对外接口不受影响。
+func (s *Server) pinUpstream(m store.Model, ps []store.Provider, providerID int64, upstreamName string) (store.Model, []store.Provider, error) {
+	if providerID <= 0 && upstreamName == "" {
+		return m, ps, nil
+	}
+
+	allowed := make(map[int64]bool, len(ps))
+	for _, p := range ps {
+		allowed[p.ID] = true
+	}
+
+	inputs := make([]store.ModelInput, 0, len(m.Inputs))
+	for _, in := range m.AllInputs() {
+		if !allowed[in.ProviderID] {
+			continue
+		}
+		if providerID > 0 && in.ProviderID != providerID {
+			continue
+		}
+		if upstreamName != "" && in.UpstreamName != upstreamName {
+			continue
+		}
+		inputs = append(inputs, in)
+	}
+
+	if providerID > 0 {
+		// 只保留目标渠道，避免失败后自动切到别的渠道。
+		keep := make([]store.Provider, 0, 1)
+		for _, p := range ps {
+			if p.ID == providerID {
+				keep = append(keep, p)
+			}
+		}
+		if len(keep) == 0 {
+			return m, ps, fmt.Errorf("渠道 #%d 不可用，可能已删除或停用", providerID)
+		}
+		ps = keep
+	}
+
+	if len(inputs) == 0 {
+		if providerID <= 0 {
+			return m, ps, fmt.Errorf("模型 %s 未绑定上游模型 %s", m.Name, upstreamName)
+		}
+		name := upstreamName
+		if name == "" {
+			name = m.UpstreamName
+		}
+		inputs = []store.ModelInput{{ProviderID: providerID, UpstreamName: name}}
+	}
+	m.Inputs = inputs
+	return m, ps, nil
+}
 
 // ---------- 调试台 ----------
 
@@ -59,6 +146,21 @@ func (s *Server) handlePlaygroundVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runVideoCreate(w, r, panelKey, raw, true)
+}
+
+// handlePlaygroundSpeech 调试台语音合成：返回音频流供页面直接试听。
+func (s *Server) handlePlaygroundSpeech(w http.ResponseWriter, r *http.Request) {
+	raw, err := decodeMap(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请求体不是合法 JSON："+err.Error())
+		return
+	}
+	s.runSpeech(w, r, panelKey, raw, true)
+}
+
+// handlePlaygroundTranscription 调试台语音识别：上传音频，返回识别文本。
+func (s *Server) handlePlaygroundTranscription(w http.ResponseWriter, r *http.Request) {
+	s.runTranscription(w, r, panelKey, true)
 }
 
 // applySkill 把技能模板渲染成实际的 prompt / messages。
@@ -178,7 +280,7 @@ func (s *Server) handleConnectorGenerate(w http.ResponseWriter, r *http.Request)
 		APIKeyName: panelKey.Name, Status: 200,
 		LatencyMS:    time.Since(start).Milliseconds(),
 		PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens,
-		ResponsePreview: truncateStr(out.Content, 1200),
+		ResponsePreview: truncateStr(out.Content, s.logBodyLimit()),
 	})
 }
 
@@ -432,7 +534,7 @@ func (s *Server) handleSkillGenerate(w http.ResponseWriter, r *http.Request) {
 		LatencyMS:       time.Since(start).Milliseconds(),
 		PromptTokens:    out.Usage.PromptTokens,
 		CompletionTokens: out.Usage.CompletionTokens,
-		ResponsePreview: truncateStr(out.Content, 1200),
+		ResponsePreview: truncateStr(out.Content, s.logBodyLimit()),
 	})
 }
 

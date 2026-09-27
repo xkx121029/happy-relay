@@ -5,10 +5,26 @@ import (
 	"unicode"
 )
 
-// imageTokensEstimate 是单张图片的上下文开销估值。
-// 各供应商算法差异较大（低细节约 85，高细节可达上千），这里取偏保守的中间值，
-// 仅用于容量规划，不参与计费。
-const imageTokensEstimate = 800
+// imageTokensMedium 是单张图片的上下文开销估值（中档）。
+// 各供应商算法差异较大（低细节约 85，高细节可达数千），这里按图片体积分档取
+// 偏保守的中间值，仅用于容量规划，不参与计费。
+const (
+	imageTokensSmall  = 800  // ≤100KB：截图 / 缩略图
+	imageTokensMedium = 1400 // ≤700KB：常规照片
+	imageTokensLarge  = 2200 // 更大：高分辨率原图
+)
+
+// imageTokenCost 按解码后的图片字节量选档；URL 引用看不到体积，按中档估。
+func imageTokenCost(bytesLen int) int {
+	switch {
+	case bytesLen <= 100*1024:
+		return imageTokensSmall
+	case bytesLen <= 700*1024:
+		return imageTokensMedium
+	default:
+		return imageTokensLarge
+	}
+}
 
 // EstimateTokens 估算一段文本的 token 数。
 // 采用「CJK 每字约 1 token、其余每 4 字符约 1 token」的通用经验值，
@@ -60,7 +76,7 @@ func EstimateChatTokens(in *ChatInput) int {
 		total += EstimateTokens(msg.Reasoning)
 		for _, part := range msg.Parts {
 			if part.Type == "image" {
-				total += imageTokensEstimate
+				total += imageTokenCost(len(part.Data))
 			}
 		}
 		for _, tc := range msg.ToolCalls {

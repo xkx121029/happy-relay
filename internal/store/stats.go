@@ -32,6 +32,7 @@ type ModelStat struct {
 	Calls      int64   `json:"calls"`
 	Failed     int64   `json:"failed"`
 	Tokens     int64   `json:"tokens"`
+	Cost       float64 `json:"cost"`
 	AvgLatency float64 `json:"avg_latency_ms"`
 }
 
@@ -40,6 +41,7 @@ type ProviderStat struct {
 	Provider   string  `json:"provider"`
 	Calls      int64   `json:"calls"`
 	Failed     int64   `json:"failed"`
+	Cost       float64 `json:"cost"`
 	AvgLatency float64 `json:"avg_latency_ms"`
 }
 
@@ -47,7 +49,7 @@ type ProviderStat struct {
 func (s *Store) ModelStats(days int) ([]ModelStat, error) {
 	rows, err := s.db.Query(`SELECT model,COUNT(*),
 		COALESCE(SUM(CASE WHEN status>=400 OR error<>'' THEN 1 ELSE 0 END),0),
-		COALESCE(SUM(prompt_tokens+completion_tokens),0),COALESCE(AVG(latency_ms),0)
+		COALESCE(SUM(prompt_tokens+completion_tokens),0),COALESCE(SUM(cost),0),COALESCE(AVG(latency_ms),0)
 		FROM usage_logs WHERE created_at>=? GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20`,
 		daysAgoStart(days))
 	if err != nil {
@@ -57,7 +59,7 @@ func (s *Store) ModelStats(days int) ([]ModelStat, error) {
 	out := []ModelStat{}
 	for rows.Next() {
 		var it ModelStat
-		if err := rows.Scan(&it.Model, &it.Calls, &it.Failed, &it.Tokens, &it.AvgLatency); err != nil {
+		if err := rows.Scan(&it.Model, &it.Calls, &it.Failed, &it.Tokens, &it.Cost, &it.AvgLatency); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -68,7 +70,8 @@ func (s *Store) ModelStats(days int) ([]ModelStat, error) {
 // ProviderStats 返回最近 days 天里按渠道聚合的用量排行。
 func (s *Store) ProviderStats(days int) ([]ProviderStat, error) {
 	rows, err := s.db.Query(`SELECT provider_name,COUNT(*),
-		COALESCE(SUM(CASE WHEN status>=400 OR error<>'' THEN 1 ELSE 0 END),0),COALESCE(AVG(latency_ms),0)
+		COALESCE(SUM(CASE WHEN status>=400 OR error<>'' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(cost),0),COALESCE(AVG(latency_ms),0)
 		FROM usage_logs WHERE created_at>=? AND provider_name<>'' GROUP BY provider_name
 		ORDER BY COUNT(*) DESC LIMIT 20`, daysAgoStart(days))
 	if err != nil {
@@ -78,7 +81,7 @@ func (s *Store) ProviderStats(days int) ([]ProviderStat, error) {
 	out := []ProviderStat{}
 	for rows.Next() {
 		var it ProviderStat
-		if err := rows.Scan(&it.Provider, &it.Calls, &it.Failed, &it.AvgLatency); err != nil {
+		if err := rows.Scan(&it.Provider, &it.Calls, &it.Failed, &it.Cost, &it.AvgLatency); err != nil {
 			return nil, err
 		}
 		out = append(out, it)

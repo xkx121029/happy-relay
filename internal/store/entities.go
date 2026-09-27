@@ -14,6 +14,7 @@ import (
 // 渠道类型：决定使用哪个协议适配器。
 const (
 	KindOpenAI    = "openai"    // OpenAI 兼容（/v1/chat/completions 等）
+	KindZhipu     = "zhipu"     // 智谱 GLM（/api/paas/v4，协议与 OpenAI 一致）
 	KindGemini    = "gemini"    // Google Gemini 原生 generateContent
 	KindAnthropic = "anthropic" // Anthropic Claude 原生 Messages
 	KindTemplate  = "template"  // 模板驱动，可接任意 HTTP 上游
@@ -27,19 +28,21 @@ type Provider struct {
 	BaseURLs   []string          `json:"base_urls"`
 	APIKeys    []string          `json:"api_keys"`
 	Headers    map[string]string `json:"headers"`
-	Strategy   string            `json:"strategy"` // round_robin | random | failover
+	Strategy   string            `json:"strategy"` // round_robin | random | failover | weighted
 	TimeoutSec int               `json:"timeout_sec"`
-	Enabled    bool              `json:"enabled"`
-	Remark     string            `json:"remark"`
-	CreatedAt  string            `json:"created_at"`
-	UpdatedAt  string            `json:"updated_at"`
+	Weight     int               `json:"weight"` // 加权负载均衡权重，<=0 视为 1
+	Enabled       bool              `json:"enabled"`
+	Remark        string            `json:"remark"`
+	NoVersionPath bool              `json:"no_version_path"`
+	CreatedAt     string            `json:"created_at"`
+	UpdatedAt     string            `json:"updated_at"`
 
 	ModelCount int `json:"model_count,omitempty"`
 }
 
 func (s *Store) ListProviders() ([]Provider, error) {
 	rows, err := s.db.Query(`SELECT id,name,kind,base_urls,api_keys,headers,strategy,
-		timeout_sec,enabled,remark,created_at,updated_at,0 FROM providers ORDER BY id DESC`)
+		timeout_sec,enabled,remark,weight,no_version_path,created_at,updated_at,0 FROM providers ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +97,7 @@ func (s *Store) providerModelCounts() (map[int64]int, error) {
 
 func (s *Store) GetProvider(id int64) (Provider, error) {
 	row := s.db.QueryRow(`SELECT id,name,kind,base_urls,api_keys,headers,strategy,timeout_sec,
-		enabled,remark,created_at,updated_at,0 FROM providers WHERE id=?`, id)
+		enabled,remark,weight,no_version_path,created_at,updated_at,0 FROM providers WHERE id=?`, id)
 	p, err := scanProvider(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Provider{}, ErrNotFound
@@ -109,15 +112,16 @@ type scanner interface {
 func scanProvider(sc scanner) (Provider, error) {
 	var p Provider
 	var baseURLs, apiKeys, headers string
-	var enabled int
+	var enabled, noVersionPath int
 	if err := sc.Scan(&p.ID, &p.Name, &p.Kind, &baseURLs, &apiKeys, &headers, &p.Strategy,
-		&p.TimeoutSec, &enabled, &p.Remark, &p.CreatedAt, &p.UpdatedAt, &p.ModelCount); err != nil {
+		&p.TimeoutSec, &enabled, &p.Remark, &p.Weight, &noVersionPath, &p.CreatedAt, &p.UpdatedAt, &p.ModelCount); err != nil {
 		return Provider{}, err
 	}
 	p.BaseURLs = unmarshal(baseURLs, []string{})
 	p.APIKeys = unmarshal(apiKeys, []string{})
 	p.Headers = unmarshal(headers, map[string]string{})
 	p.Enabled = enabled == 1
+	p.NoVersionPath = noVersionPath == 1
 	return p, nil
 }
 
@@ -137,16 +141,19 @@ func (s *Store) SaveProvider(p Provider) (Provider, error) {
 	if p.TimeoutSec <= 0 {
 		p.TimeoutSec = 600
 	}
+	if p.Weight <= 0 {
+		p.Weight = 1
+	}
 	if p.Headers == nil {
 		p.Headers = map[string]string{}
 	}
 	ts := now()
 	if p.ID == 0 {
 		res, err := s.db.Exec(`INSERT INTO providers
-			(name,kind,base_urls,api_keys,headers,strategy,timeout_sec,enabled,remark,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			(name,kind,base_urls,api_keys,headers,strategy,timeout_sec,weight,enabled,remark,no_version_path,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			p.Name, p.Kind, marshal(p.BaseURLs), marshal(p.APIKeys), marshal(p.Headers),
-			p.Strategy, p.TimeoutSec, boolInt(p.Enabled), p.Remark, ts, ts)
+			p.Strategy, p.TimeoutSec, p.Weight, boolInt(p.Enabled), p.Remark, boolInt(p.NoVersionPath), ts, ts)
 		if err != nil {
 			return p, err
 		}
@@ -155,9 +162,9 @@ func (s *Store) SaveProvider(p Provider) (Provider, error) {
 		return p, nil
 	}
 	_, err := s.db.Exec(`UPDATE providers SET name=?,kind=?,base_urls=?,api_keys=?,headers=?,
-		strategy=?,timeout_sec=?,enabled=?,remark=?,updated_at=? WHERE id=?`,
+		strategy=?,timeout_sec=?,weight=?,enabled=?,remark=?,no_version_path=?,updated_at=? WHERE id=?`,
 		p.Name, p.Kind, marshal(p.BaseURLs), marshal(p.APIKeys), marshal(p.Headers),
-		p.Strategy, p.TimeoutSec, boolInt(p.Enabled), p.Remark, ts, p.ID)
+		p.Strategy, p.TimeoutSec, p.Weight, boolInt(p.Enabled), p.Remark, boolInt(p.NoVersionPath), ts, p.ID)
 	if err != nil {
 		return p, err
 	}
@@ -237,6 +244,10 @@ const (
 	CapImage     = "image"
 	CapVideo     = "video"
 	CapEmbedding = "embedding"
+	// CapSpeech 是文本转语音（语音合成），CapTranscription 是语音转文字（语音识别）。
+	// 两者方向相反，实际上游通常由不同模型承担，因此拆成两种能力分别配置与路由。
+	CapSpeech        = "speech"
+	CapTranscription = "transcription"
 )
 
 // TemplateSpec 描述如何把统一的 v1 请求翻译成一次上游 HTTP 调用。
@@ -282,6 +293,11 @@ type ModelConfig struct {
 	// Tier 是模型档位，供 auto 自动路由按任务难度挑选：light | standard | pro。
 	// 留空时按上游模型名启发式推断。
 	Tier string `json:"tier,omitempty"`
+	// Intelligence 是「智力分」：由主模型对模型做标准化测评后给出的 0-100 综合分，
+	// 0 表示未测评。auto 路由在同档位内优先把任务派给高分模型。
+	Intelligence int `json:"intelligence,omitempty"`
+	// BenchmarkedAt 是最近一次智力测评时间（RFC3339），供面板展示时效。
+	BenchmarkedAt string `json:"benchmarked_at,omitempty"`
 	// ImageMode 决定图片请求体的组装方式：
 	// standard（默认，OpenAI 标准：response_format 与参考图放顶层）
 	// extra_body（Agnes Image 2.1 Flash 等要求把 response_format / image 放进 extra_body）
@@ -294,6 +310,15 @@ type ModelConfig struct {
 	Image      *TemplateSpec `json:"image,omitempty"`
 	Video      *TemplateSpec `json:"video,omitempty"`
 	VideoQuery *TemplateSpec `json:"video_query,omitempty"`
+
+	// 限速（仅对对外模型生效，0 表示不限制）。
+	RPM int `json:"rpm,omitempty"` // 每分钟请求上限
+	TPM int `json:"tpm,omitempty"` // 每分钟 token 上限（按实际消耗累加）
+
+	// 单价（计费用，单位：元 / 美元均可，自行统一；0 表示不计费）。
+	PriceIn    float64 `json:"price_in,omitempty"`    // 每 1K 输入 token 价格
+	PriceOut   float64 `json:"price_out,omitempty"`   // 每 1K 输出 token 价格
+	PriceImage float64 `json:"price_image,omitempty"` // 每张生成图片价格
 }
 
 // 模型档位：auto 自动模型会按任务难度在对应档位里挑选。
@@ -314,9 +339,97 @@ const (
 
 // ModelInput 是模型的一个上游输入：某渠道下的某个具体上游模型。
 // 一个对外模型可以配置多个输入，按顺序尝试，失败自动切换。
+// 同一个渠道也可以挂多个不同的上游模型（例如同为智谱平台下的
+// glm-4.7-flash 与 glm-4.6v-flash），运行时按输入模态自动择一。
 type ModelInput struct {
 	ProviderID   int64  `json:"provider_id"`
 	UpstreamName string `json:"upstream_name"`
+	// InputModalities / OutputModalities 描述该上游模型接受的输入与产出的输出模态，
+	// 如 ["text","image"] / ["text"]。留空时按上游模型名与能力自动推断。
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
+}
+
+// 模态：描述模型能接受的输入与能产出的输出。
+const (
+	ModalityText  = "text"
+	ModalityImage = "image"
+	ModalityVideo = "video"
+	ModalityFile  = "file"
+	ModalityAudio = "audio"
+)
+
+// visionModelKeywords 命中表示模型具备视觉能力（能读图）。
+var visionModelKeywords = []string{
+	"4v", "4.6v", "4.1v", "-vl", "vl-", "vision", "llava", "pixtral",
+	"internvl", "moondream", "minicpm-v", "qwen-vl", "gemini", "gpt-4o",
+	"gpt-4.1", "gpt-4-turbo", "gpt-4v", "claude-3", "claude-4", "step-1v",
+}
+
+// videoInputKeywords 命中表示模型还能直接理解视频输入。
+var videoInputKeywords = []string{"4.6v", "4.1v", "video", "gemini-1.5", "gemini-2"}
+
+// fileInputKeywords 命中表示模型能解析文档类输入。
+var fileInputKeywords = []string{"4.6v", "4.1v", "file", "document", "pdf"}
+
+// GuessModalities 按上游模型名与能力推断输入输出模态。
+// 名称特征优先（如 -v / 4.6v 表示能读图甚至读视频），取不到时回退到能力对应的默认组合。
+func GuessModalities(name, capability string) ([]string, []string) {
+	n := strings.ToLower(strings.TrimSpace(name))
+	text := []string{ModalityText}
+
+	switch capability {
+	case CapImage:
+		return text, []string{ModalityImage}
+	case CapVideo:
+		// 视频模型普遍支持以一张图作为首帧。
+		return []string{ModalityText, ModalityImage}, []string{ModalityVideo}
+	case CapEmbedding:
+		return text, text
+	case CapSpeech:
+		// 语音合成：吃文本，吐音频。
+		return text, []string{ModalityAudio}
+	case CapTranscription:
+		// 语音识别：吃音频，吐文本。
+		return []string{ModalityAudio}, text
+	}
+
+	inputs := []string{ModalityText}
+	if containsAny(n, visionModelKeywords) {
+		inputs = append(inputs, ModalityImage)
+		if containsAny(n, videoInputKeywords) {
+			inputs = append(inputs, ModalityVideo)
+		}
+		if containsAny(n, fileInputKeywords) {
+			inputs = append(inputs, ModalityFile)
+		}
+	}
+	return inputs, text
+}
+
+// containsAny 判断字符串是否命中任一关键词。
+func containsAny(s string, keywords []string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// CleanModalities 清洗模态列表：去空白、转小写、去重，保持原顺序。
+func CleanModalities(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, v := range in {
+		m := strings.ToLower(strings.TrimSpace(v))
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 // Model 是对外暴露的一个模型名，可聚合多个渠道与上游模型。
@@ -345,17 +458,27 @@ type Model struct {
 // 旧数据没有 inputs，用 provider_ids 与统一的 upstream_name 推导。
 func (m Model) AllInputs() []ModelInput {
 	out := make([]ModelInput, 0, len(m.Inputs))
-	seen := map[int64]bool{}
+	seen := map[inputKey]bool{}
 	for _, in := range m.Inputs {
-		if in.ProviderID <= 0 || seen[in.ProviderID] {
+		if in.ProviderID <= 0 {
 			continue
 		}
-		seen[in.ProviderID] = true
 		name := strings.TrimSpace(in.UpstreamName)
 		if name == "" {
 			name = m.UpstreamName
 		}
-		out = append(out, ModelInput{ProviderID: in.ProviderID, UpstreamName: name})
+		// 同一个渠道可以挂多个上游模型，因此按「渠道 + 上游名」去重。
+		k := inputKey{providerID: in.ProviderID, upstream: name}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, ModelInput{
+			ProviderID:       in.ProviderID,
+			UpstreamName:     name,
+			InputModalities:  CleanModalities(in.InputModalities),
+			OutputModalities: CleanModalities(in.OutputModalities),
+		})
 	}
 	if len(out) == 0 {
 		for _, id := range m.AllProviderIDs() {
@@ -363,6 +486,56 @@ func (m Model) AllInputs() []ModelInput {
 		}
 	}
 	return out
+}
+
+// inputKey 是输入项的去重键：同一渠道 + 同一上游模型视为同一条。
+type inputKey struct {
+	providerID int64
+	upstream   string
+}
+
+// InputModalities 返回模型全部输入能接受的模态并集。
+func (m Model) InputModalities() []string {
+	out := []string{}
+	for _, in := range m.AllInputs() {
+		ins, _ := in.Modalities(m.Capability)
+		out = append(out, ins...)
+	}
+	if len(out) == 0 {
+		ins, _ := GuessModalities(m.UpstreamName, m.Capability)
+		return ins
+	}
+	return CleanModalities(out)
+}
+
+// OutputModalities 返回模型可能产出的输出模态并集。
+func (m Model) OutputModalities() []string {
+	out := []string{}
+	for _, in := range m.AllInputs() {
+		_, outs := in.Modalities(m.Capability)
+		out = append(out, outs...)
+	}
+	if len(out) == 0 {
+		_, outs := GuessModalities(m.UpstreamName, m.Capability)
+		return outs
+	}
+	return CleanModalities(out)
+}
+
+// Modalities 返回单个输入项的输入与输出模态：显式声明优先，否则按名称与能力推断。
+func (in ModelInput) Modalities(capability string) ([]string, []string) {
+	inputs := CleanModalities(in.InputModalities)
+	outputs := CleanModalities(in.OutputModalities)
+	if len(inputs) == 0 || len(outputs) == 0 {
+		gi, go_ := GuessModalities(in.UpstreamName, capability)
+		if len(inputs) == 0 {
+			inputs = gi
+		}
+		if len(outputs) == 0 {
+			outputs = go_
+		}
+	}
+	return inputs, outputs
 }
 
 // AllProviderIDs 返回模型绑定的全部渠道 ID（有序去重）。旧数据只有 provider_id 时回退到单渠道。
@@ -390,6 +563,11 @@ func (m Model) EffectiveTier() string {
 	case TierLight, TierStandard, TierPro:
 		return m.Config.Tier
 	}
+	// 顶层 UpstreamName 只是首个输入的冗余备份，未必是真正的上游模型名，
+	// 多渠道绑定时以实际输入为准。
+	if ins := m.AllInputs(); len(ins) > 0 && ins[0].UpstreamName != "" {
+		return GuessTier(ins[0].UpstreamName)
+	}
 	return GuessTier(m.UpstreamName)
 }
 
@@ -411,12 +589,27 @@ func GuessTier(name string) string {
 
 // EffectiveContextLength 返回模型可用的上下文窗口（token），0 表示未知。
 // 优先级：模型显式配置 > 模型库探测值 > 按上游模型名启发式推断。
+// 聚合多上游时，探测与推断都取全部输入里的最小值（按最差情况校验容量）。
 func (m Model) EffectiveContextLength() int {
 	if m.Config.ContextLength > 0 {
 		return m.Config.ContextLength
 	}
 	if m.CatalogContextLength > 0 {
 		return m.CatalogContextLength
+	}
+	// 与 EffectiveTier 同理：以实际绑定的上游模型名为准，
+	// 否则多渠道绑定时会拿着对外模型名去推断，永远命中不了规则表。
+	// 聚合模型取最小值：请求可能落到任何一个上游，容量按短板校验。
+	min := 0
+	for _, in := range m.AllInputs() {
+		if n := GuessContextLength(in.UpstreamName); n > 0 {
+			if min == 0 || n < min {
+				min = n
+			}
+		}
+	}
+	if min > 0 {
+		return min
 	}
 	return GuessContextLength(m.UpstreamName)
 }
@@ -428,7 +621,7 @@ var contextLengthRules = []struct {
 	length   int
 }{
 	{[]string{"gemini-2", "gemini-1.5", "gemini-exp"}, 1048576},
-	{[]string{"claude", "o1-", "o3-", "o4-"}, 200000},
+	{[]string{"glm-4.7", "glm-4.6", "claude", "o1-", "o3-", "o4-"}, 200000},
 	{[]string{"gpt-4.1", "gpt-4o", "gpt-4-turbo", "chatgpt-4o"}, 128000},
 	{[]string{"qwen3", "qwen2.5", "qwen2", "qwen-max", "yi-"}, 131072},
 	{[]string{"glm-4", "kimi", "moonshot", "command-r", "llama-3", "llama3"}, 131072},
@@ -497,6 +690,21 @@ func (s *Store) GetModel(id int64) (Model, error) {
 	return m, nil
 }
 
+// GetModelByName 按对外模型名精确查找。
+// 名称在库里是唯一约束，创建前用它做一次预检，
+// 好过把 SQLite 的 UNIQUE 约束错误直接抛给用户。
+func (s *Store) GetModelByName(name string) (Model, error) {
+	m, err := scanModel(s.db.QueryRow(modelSelect+` WHERE m.name=?`, strings.TrimSpace(name)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Model{}, ErrNotFound
+	}
+	if err != nil {
+		return Model{}, err
+	}
+	fillCatalogContext(&m, s.catalogContextIndex())
+	return m, nil
+}
+
 // ResolveModel 按对外模型名解析出可用模型（含渠道信息）。
 func (s *Store) ResolveModel(name string) (Model, error) {
 	m, err := scanModel(s.db.QueryRow(modelSelect+` WHERE m.name=? AND m.enabled=1`, name))
@@ -526,18 +734,26 @@ func scanModel(sc scanner) (Model, error) {
 	return m, nil
 }
 
-// cleanInputs 去掉无效项并按渠道去重，保持顺序。
+// cleanInputs 去掉无效项并按「渠道 + 上游模型名」去重，保持顺序。
+// 注意这里不能只按渠道去重：同一个渠道下允许挂多个不同的上游模型。
 func cleanInputs(in []ModelInput) []ModelInput {
 	out := make([]ModelInput, 0, len(in))
-	seen := map[int64]bool{}
+	seen := map[inputKey]bool{}
 	for _, v := range in {
-		if v.ProviderID <= 0 || seen[v.ProviderID] {
+		if v.ProviderID <= 0 {
 			continue
 		}
-		seen[v.ProviderID] = true
+		upstream := strings.TrimSpace(v.UpstreamName)
+		k := inputKey{providerID: v.ProviderID, upstream: upstream}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		out = append(out, ModelInput{
-			ProviderID:   v.ProviderID,
-			UpstreamName: strings.TrimSpace(v.UpstreamName),
+			ProviderID:       v.ProviderID,
+			UpstreamName:     upstream,
+			InputModalities:  CleanModalities(v.InputModalities),
+			OutputModalities: CleanModalities(v.OutputModalities),
 		})
 	}
 	return out
@@ -552,7 +768,7 @@ func (s *Store) SaveModel(m Model) (Model, error) {
 		m.UpstreamName = m.Name
 	}
 	switch m.Capability {
-	case CapChat, CapImage, CapVideo, CapEmbedding:
+	case CapChat, CapImage, CapVideo, CapEmbedding, CapSpeech, CapTranscription:
 	default:
 		m.Capability = CapChat
 	}

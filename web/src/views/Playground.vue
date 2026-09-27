@@ -1,19 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api, streamChat, type Skill, type VideoTask } from '../api'
-import { models, skills, state, toast } from '../store'
+import { models, providers, skills, state, toast } from '../store'
 import { capLabel, fmtTime, renderMarkdown } from '../utils'
 
 interface ChatMsg {
   role: string
   content: string
   reasoning?: string
+  /** 用户消息附带的图片（data URI），仅用于本地展示，回放时不重发。 */
+  images?: string[]
   /** 本次回复实际命中的上游渠道 */
   provider?: string
   /** auto 模式下实际选中的模型 */
   routedModel?: string
+  /** 聚合模型实际命中的上游模型名（后端 meta.upstream） */
+  upstream?: string
   /** auto 模式下的难度评估 */
   difficulty?: { score: number; tier: string; reason: string }
+  /** 本轮回复总耗时（毫秒），前端计时 */
+  elapsedMS?: number
 }
 
 const loading = ref(true)
@@ -27,6 +33,12 @@ const msgs = ref<ChatMsg[]>([])
 const streaming = ref(false)
 let controller: AbortController | null = null
 const streamEl = ref<HTMLElement | null>(null)
+
+// 待发送的图片附件（data URI）。发送后清空；只挂在当前这条用户消息上。
+const attachments = ref<{ id: number; data: string; name: string; size: number }[]>([])
+let attachSeq = 0
+const MAX_ATTACH = 4
+const MAX_ATTACH_BYTES = 4 * 1024 * 1024
 
 const generating = ref(false)
 const images = ref<string[]>([])
@@ -49,7 +61,11 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  restoreChat()
+  restoreParams()
+  load()
+})
 
 const capTabs = computed(
   () =>
@@ -70,6 +86,222 @@ const capSkills = computed(() =>
 
 const selModelInfo = computed(() => capModels.value.find((m) => m.name === selModel.value))
 
+// ---------- 指定上游（仅调试台） ----------
+
+// pinnedUpstream 为空 = 按模型配置自动调度；否则钉住某一条上游。
+const pinnedUpstream = ref('')
+
+// upstreamOptions 列出当前模型绑定的上游，key 形如 "渠道ID::上游模型名"。
+const upstreamOptions = computed(() => {
+  const list = selModelInfo.value?.inputs || []
+  return list.map((inp) => {
+    const p = providers.value.find((x) => x.id === inp.provider_id)
+    return {
+      key: `${inp.provider_id}::${inp.upstream_name}`,
+      label: `${p?.name || '渠道 #' + inp.provider_id} · ${inp.upstream_name}`,
+      provider_id: inp.provider_id,
+      upstream_name: inp.upstream_name,
+    }
+  })
+})
+
+// pinBody 把指定的上游写进请求体，后端仅在调试台入口读取这两个字段。
+function pinBody(body: Record<string, any>) {
+  if (!pinnedUpstream.value) return body
+  const [pid, name] = pinnedUpstream.value.split('::')
+  body.provider_id = Number(pid)
+  if (name) body.upstream_name = name
+  return body
+}
+
+// ---------- 对话采样参数（system prompt / temperature / top_p / max_tokens） ----------
+// 后端会把请求体里的未知字段原样透传给上游，这里只需在前端拼进 body 即可。
+// 参数随 localStorage 持久化，刷新后不丢。
+
+const systemPrompt = ref('')
+const temperature = ref('')
+const topP = ref('')
+const maxTokens = ref('')
+
+const PARAMS_STORAGE_KEY = 'playground.params.v1'
+
+function saveParams() {
+  try {
+    localStorage.setItem(
+      PARAMS_STORAGE_KEY,
+      JSON.stringify({ s: systemPrompt.value, t: temperature.value, p: topP.value, m: maxTokens.value }),
+    )
+  } catch {}
+}
+
+function restoreParams() {
+  try {
+    const raw = localStorage.getItem(PARAMS_STORAGE_KEY)
+    if (!raw) return
+    const o = JSON.parse(raw)
+    systemPrompt.value = o.s || ''
+    temperature.value = o.t ?? ''
+    topP.value = o.p ?? ''
+    maxTokens.value = o.m ?? ''
+  } catch {}
+}
+
+watch([systemPrompt, temperature, topP, maxTokens], saveParams)
+
+// applyChatParams 把采样参数合并进请求体；system prompt 插到消息列表最前。
+// 留空的参数不下发，交给上游用默认值。
+function applyChatParams(body: any) {
+  const sys = systemPrompt.value.trim()
+  if (sys && Array.isArray(body.messages)) {
+    body.messages = [{ role: 'system', content: sys }, ...body.messages]
+  }
+  if (temperature.value !== '') body.temperature = Number(temperature.value)
+  if (topP.value !== '') body.top_p = Number(topP.value)
+  if (maxTokens.value !== '') body.max_tokens = Number(maxTokens.value)
+}
+
+// ---------- 导出对话 Markdown ----------
+
+function exportChat() {
+  if (!msgs.value.length) return
+  const lines: string[] = [
+    '# 调试台对话记录',
+    '',
+    `- 模型：${selModel.value || '—'}`,
+    `- 导出时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+  ]
+  if (systemPrompt.value.trim()) lines.push(`- System Prompt：${systemPrompt.value.trim()}`)
+  lines.push('', '---', '')
+  for (const m of msgs.value) {
+    lines.push(m.role === 'user' ? '## 用户' : '## 助手')
+    const meta: string[] = []
+    if (m.routedModel) meta.push(`实际模型 ${m.routedModel}`)
+    if (m.provider) meta.push(`渠道 ${m.provider}`)
+    if (m.elapsedMS) meta.push(`耗时 ${m.elapsedMS} ms`)
+    if (meta.length) lines.push(`> ${meta.join(' · ')}`, '')
+    lines.push(m.content || '', '')
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `playground-${new Date().toISOString().slice(0, 10)}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+  toast('对话已导出为 Markdown')
+}
+
+// ---------- 图片结果下载 ----------
+
+function imgDownloadName(index: number, src: string): string {
+  let ext = '.png'
+  if (src.startsWith('data:image/webp')) ext = '.webp'
+  else if (src.startsWith('data:image/jpeg')) ext = '.jpg'
+  else if (src.startsWith('data:image/gif')) ext = '.gif'
+  return `image-${index + 1}${ext}`
+}
+
+// ---------- 语音合成 ----------
+
+const speechText = ref('')
+const speechVoice = ref('')
+const speechFormat = ref('mp3')
+const speechBusy = ref(false)
+const speechUrl = ref('')
+
+const speechFormats = ['mp3', 'wav', 'opus', 'aac', 'flac', 'pcm']
+
+function revokeSpeechUrl() {
+  if (speechUrl.value) {
+    URL.revokeObjectURL(speechUrl.value)
+    speechUrl.value = ''
+  }
+}
+
+async function genSpeech() {
+  if (!selModel.value) {
+    toast('请先选择语音合成模型', 'error')
+    return
+  }
+  const text = input.value.trim()
+  if (!selSkill.value && !text) {
+    toast('请输入要合成的文本', 'error')
+    return
+  }
+  const body: any = { model: selModel.value, ...skillBody() }
+  if (text) body.input = text
+  if (speechVoice.value.trim()) body.voice = speechVoice.value.trim()
+  if (speechFormat.value) body.response_format = speechFormat.value
+  pinBody(body)
+  speechBusy.value = true
+  revokeSpeechUrl()
+  try {
+    const blob = await api.playgroundSpeech(body)
+    speechUrl.value = URL.createObjectURL(blob)
+    toast('合成完成', 'success')
+  } catch (e: any) {
+    toast(e.message || '合成失败', 'error')
+  } finally {
+    speechBusy.value = false
+  }
+}
+
+// ---------- 语音识别 ----------
+
+const transcribeFile = ref<File | null>(null)
+const transcribeLanguage = ref('')
+const transcribeBusy = ref(false)
+const transcribeText = ref('')
+const transcribeRaw = ref('')
+
+function pickTranscribeFile(e: Event) {
+  const el = e.target as HTMLInputElement
+  const f = el.files?.[0]
+  if (!f) return
+  if (f.size > 64 * 1024 * 1024) {
+    toast('音频文件不能超过 64MB', 'error')
+    el.value = ''
+    return
+  }
+  transcribeFile.value = f
+}
+
+async function runTranscribe() {
+  if (!selModel.value) {
+    toast('请先选择语音识别模型', 'error')
+    return
+  }
+  if (!transcribeFile.value) {
+    toast('请先选择要识别的音频文件', 'error')
+    return
+  }
+  const form = new FormData()
+  form.append('file', transcribeFile.value)
+  form.append('model', selModel.value)
+  if (transcribeLanguage.value.trim()) form.append('language', transcribeLanguage.value.trim())
+  // 指定上游时一并带上，后端只在调试台入口读取这两个字段。
+  if (pinnedUpstream.value) {
+    const [pid, name] = pinnedUpstream.value.split('::')
+    form.append('provider_id', pid)
+    if (name) form.append('upstream_name', name)
+  }
+  transcribeBusy.value = true
+  transcribeText.value = ''
+  transcribeRaw.value = ''
+  try {
+    const res = await api.playgroundTranscribe(form)
+    transcribeText.value = res?.text || ''
+    transcribeRaw.value = JSON.stringify(res, null, 2)
+    if (!transcribeText.value) toast('上游未返回 text 字段，请看原始响应', 'error')
+  } catch (e: any) {
+    toast(e.message || '识别失败', 'error')
+  } finally {
+    transcribeBusy.value = false
+  }
+}
+
+onUnmounted(revokeSpeechUrl)
+
 // auto 是服务端内置的自动模型：按任务难度挑选合适的文本模型。
 const modelOptions = computed(() => {
   const opts = capModels.value.map((m) => ({ name: m.name, label: m.name }))
@@ -88,12 +320,18 @@ const currentSkill = computed<Skill | undefined>(() => skills.value.find((s) => 
 watch(capability, () => {
   selModel.value = capModels.value[0]?.name || ''
   selSkill.value = ''
+  pinnedUpstream.value = ''
 })
 
 watch(capModels, (list) => {
   if (!list.some((m) => m.name === selModel.value)) {
     selModel.value = list[0]?.name || ''
   }
+})
+
+// 换模型后原有的上游选择必然失效，重置回自动。
+watch(selModel, () => {
+  pinnedUpstream.value = ''
 })
 
 watch(selSkill, () => {
@@ -119,7 +357,115 @@ async function scrollBottom() {
   if (streamEl.value) streamEl.value.scrollTop = streamEl.value.scrollHeight
 }
 
+// ---------- 对话会话持久化 ----------
+// 刷新页面后自动恢复上次对话，避免调试到一半白屏重来。
+// 图片附件只保留小于 100KB 的 data URI（localStorage 容量有限），大图丢弃。
+
+const CHAT_STORAGE_KEY = 'playground.chat.v1'
+
+function saveChat() {
+  try {
+    const slim = msgs.value.slice(-80).map((m) => ({
+      role: m.role,
+      content: m.content,
+      reasoning: m.reasoning,
+      provider: m.provider,
+      upstream: m.upstream,
+      routedModel: m.routedModel,
+      difficulty: m.difficulty,
+      elapsedMS: m.elapsedMS,
+      images: m.images?.filter((s) => s.length < 100_000),
+    }))
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(slim))
+  } catch {
+    // 存不下（超容量/隐私模式）就算了，持久化是尽力而为。
+  }
+}
+
+function restoreChat() {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY)
+    if (!raw) return
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr) && arr.length) msgs.value = arr
+  } catch {
+    // 坏数据直接忽略。
+  }
+}
+
+async function copyMsg(m: ChatMsg) {
+  try {
+    await navigator.clipboard.writeText(m.content)
+    toast('已复制到剪贴板')
+  } catch {
+    toast('复制失败：浏览器未授权剪贴板', 'error')
+  }
+}
+
 // ---------- 对话 ----------
+
+// 读取图片附件：转成 data URI 直接内嵌发送，后端会解码成二进制转发给上游。
+// 限制 4MB / 4 张，避免单次请求体过大把上游或代理打挂。
+async function readAttachment(file: File): Promise<string | null> {
+  if (!file.type.startsWith('image/')) {
+    toast(`「${file.name}」不是图片，已跳过`, 'error')
+    return null
+  }
+  if (file.size > MAX_ATTACH_BYTES) {
+    toast(`「${file.name}」超过 4MB，建议先压缩或改用 URL`, 'error')
+    return null
+  }
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(file)
+  })
+}
+
+async function addAttachments(files: FileList | File[]) {
+  const list = Array.from(files)
+  for (const f of list) {
+    if (attachments.value.length >= MAX_ATTACH) {
+      toast(`最多附带 ${MAX_ATTACH} 张图片`, 'error')
+      break
+    }
+    const data = await readAttachment(f)
+    if (data) {
+      attachments.value.push({ id: ++attachSeq, data, name: f.name, size: f.size })
+    }
+  }
+}
+
+function onPickFiles(e: Event) {
+  const el = e.target as HTMLInputElement
+  if (el.files?.length) addAttachments(el.files)
+  // 清空 input，否则连续选同一张图不触发 change。
+  el.value = ''
+}
+
+// 直接粘贴截图（Ctrl+V）是最顺手的路径，很多人截图后就想直接发。
+function onPaste(e: ClipboardEvent) {
+  const files = Array.from(e.clipboardData?.files || []).filter((f) => f.type.startsWith('image/'))
+  if (!files.length) return
+  e.preventDefault()
+  addAttachments(files)
+}
+
+function removeAttachment(id: number) {
+  attachments.value = attachments.value.filter((a) => a.id !== id)
+}
+
+// 把当前输入框内容按「文本 + 图片」组装成 OpenAI 多模态 content。
+// 只有图片没有文字时补一个占位文本，因为部分上游要求 content 非空。
+function buildUserContent(text: string, imgs: string[]): any {
+  if (!imgs.length) return text
+  const parts: any[] = []
+  if (text) parts.push({ type: 'text', text })
+  else parts.push({ type: 'text', text: '请描述这张图片。' })
+  for (const url of imgs) parts.push({ type: 'image_url', image_url: { url } })
+  return parts
+}
 
 function stopChat() {
   controller?.abort()
@@ -133,6 +479,7 @@ async function sendChat() {
     return
   }
   const text = input.value.trim()
+  const imgs = attachments.value.map((a) => a.data)
   if (selSkill.value) {
     // 技能模式：由后端渲染模板，这里只展示套用的技能与参数。
     const desc = Object.entries(skillParams)
@@ -141,21 +488,39 @@ async function sendChat() {
       .join('；')
     msgs.value.push({ role: 'user', content: `【技能】${currentSkill.value?.name}${desc ? '（' + desc + '）' : ''}` })
   } else {
-    if (!text) {
-      toast('请输入内容', 'error')
+    if (!text && !imgs.length) {
+      toast('请输入内容或添加图片', 'error')
       return
     }
-    msgs.value.push({ role: 'user', content: text })
+    msgs.value.push({ role: 'user', content: text, images: imgs })
   }
+  // 附件已挂到上面那条消息里，立刻清空输入区，避免误以为没发出去。
+  attachments.value = []
+  input.value = ''
+  resetInputHeight()
+  saveChat()
+  await streamTurn()
+}
 
+// streamTurn 基于当前 msgs 发起一轮对话：追加 assistant 占位并流式填充。
+// sendChat 与「重新生成」共用，后者在调用前已把尾部 assistant 消息摘掉。
+async function streamTurn() {
   const body: any = { model: selModel.value, stream: true, ...skillBody() }
   if (!selSkill.value) {
-    body.messages = msgs.value.map((m) => ({ role: m.role, content: m.content }))
+    // 历史消息里的老图片不再重发，只发当前这条的图，控制请求体大小。
+    const last = msgs.value.length - 1
+    const imgs = msgs.value[last]?.role === 'user' ? msgs.value[last].images || [] : []
+    body.messages = msgs.value.map((m, i) => ({
+      role: m.role,
+      content: i === last ? buildUserContent(m.content, imgs) : m.content,
+    }))
   }
-  input.value = ''
+  pinBody(body)
+  applyChatParams(body)
   const idx = msgs.value.push({ role: 'assistant', content: '', reasoning: '' }) - 1
   streaming.value = true
   controller = new AbortController()
+  const startedAt = performance.now()
   await scrollBottom()
 
   await streamChat(
@@ -176,22 +541,56 @@ async function sendChat() {
         const m = msgs.value[idx]
         if (!m) return
         if (meta.provider) m.provider = meta.provider
+        if (meta.upstream) m.upstream = meta.upstream
         if (meta.model && meta.model !== selModel.value) m.routedModel = meta.model
         if (meta.difficulty) m.difficulty = meta.difficulty
       },
       onDone: () => {
         streaming.value = false
         controller = null
+        const m = msgs.value[idx]
+        if (m) m.elapsedMS = Math.round(performance.now() - startedAt)
+        saveChat()
       },
     },
     controller.signal,
   )
   streaming.value = false
+  saveChat()
+}
+
+// regenerate 摘掉尾部 assistant 回复后原样重发最后一轮，
+// 换模型/换上游后点它即可立刻对比效果。
+async function regenerate() {
+  if (streaming.value || !selModel.value) return
+  while (msgs.value.length && msgs.value[msgs.value.length - 1].role === 'assistant') {
+    msgs.value.pop()
+  }
+  const last = msgs.value[msgs.value.length - 1]
+  if (!last || last.role !== 'user') return
+  await streamTurn()
 }
 
 function clearChat() {
   stopChat()
   msgs.value = []
+  try {
+    localStorage.removeItem(CHAT_STORAGE_KEY)
+  } catch {}
+}
+
+// ---------- 输入框自适应高度 ----------
+
+const chatInputEl = ref<HTMLTextAreaElement | null>(null)
+
+function autoGrow(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 220) + 'px'
+}
+
+function resetInputHeight() {
+  if (chatInputEl.value) chatInputEl.value.style.height = ''
 }
 
 // ---------- 图片 ----------
@@ -260,6 +659,7 @@ async function genImage() {
   const refs = imageRefs.value.map((s) => s.trim()).filter(Boolean)
   if (refs.length) body.image = refs
   if (prompt) body.prompt = prompt
+  pinBody(body)
   generating.value = true
   images.value = []
   try {
@@ -387,6 +787,7 @@ async function genVideo() {
     const audios = videoRefAudios.value.map((s) => s.trim()).filter(Boolean)
     if (audios.length) body.audios = audios
   }
+  pinBody(body)
   videoBusy.value = true
   videoTask.value = null
   stopPolling()
@@ -429,6 +830,9 @@ async function run() {
         <p>不用建秘钥就能直接在网页里试模型，支持流式对话、出图与出视频。</p>
       </div>
       <div class="row">
+        <button v-if="capability === 'chat' && msgs.length" class="btn btn-sm" @click="exportChat">
+          导出 Markdown
+        </button>
         <button v-if="capability === 'chat' && msgs.length" class="btn btn-sm" @click="clearChat">清空对话</button>
         <button class="btn btn-sm" :disabled="loading" @click="load">刷新</button>
       </div>
@@ -463,6 +867,58 @@ async function run() {
             </span>
           </div>
         </div>
+
+        <div v-if="upstreamOptions.length" class="field">
+          <label>指定上游（可选）</label>
+          <select v-model="pinnedUpstream" class="select">
+            <option value="">自动（按模型配置顺序，失败自动切换）</option>
+            <option v-for="u in upstreamOptions" :key="u.key" :value="u.key">{{ u.label }}</option>
+          </select>
+          <div class="hint">
+            {{
+              pinnedUpstream
+                ? '只走这一个上游，失败不再切换，拿到的就是它的真实报错。'
+                : '指定后可单独验证某个渠道 / 上游模型，便于定位问题。'
+            }}
+          </div>
+        </div>
+
+        <!-- 对话采样参数：后端原样透传，留空不下发 -->
+        <details v-if="capability === 'chat'" class="pg-params">
+          <summary>对话参数</summary>
+          <div class="field" style="margin-top: 10px">
+            <label>System Prompt</label>
+            <textarea
+              v-model="systemPrompt"
+              class="textarea"
+              rows="3"
+              placeholder="设定助手的角色与行为，留空则不发送"
+            />
+          </div>
+          <div class="grid cols-2" style="gap: 0 10px">
+            <div class="field">
+              <label>Temperature</label>
+              <input
+                v-model="temperature"
+                class="input"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                placeholder="默认"
+              />
+            </div>
+            <div class="field">
+              <label>Top P</label>
+              <input v-model="topP" class="input" type="number" min="0" max="1" step="0.05" placeholder="默认" />
+            </div>
+          </div>
+          <div class="field" style="margin-bottom: 4px">
+            <label>Max Tokens</label>
+            <input v-model="maxTokens" class="input" type="number" min="1" placeholder="默认（不限）" />
+          </div>
+          <div class="hint">参数会随本次对话持久保存；temperature 控制发散度，max_tokens 限制回复长度。</div>
+        </details>
 
         <div class="field" style="margin-bottom: 8px">
           <label>技能</label>
@@ -512,72 +968,223 @@ async function run() {
           <div class="hint">已选中技能「{{ currentSkill.name }}」，发送时会套用该模板。</div>
         </template>
 
-        <template v-if="capability === 'image'">
-          <div class="field" style="margin-top: 12px">
-            <label>尺寸</label>
-            <select v-model="imageSize" class="select">
-              <option v-for="s in imageSizes" :key="s" :value="s">{{ s }}</option>
-            </select>
-          </div>
-        </template>
-
-        <template v-if="capability === 'video'">
-          <div class="field" style="margin-top: 12px">
-            <label>时长（秒）</label>
-            <select v-model.number="videoDuration" class="select">
-              <option v-for="d in videoDurations" :key="d" :value="d">{{ d }} 秒</option>
-            </select>
-          </div>
-        </template>
       </div>
 
       <!-- 右侧主区域 -->
       <div>
+        <!-- 语音合成 -->
+        <template v-if="capability === 'speech'">
+          <div class="card" style="margin-bottom: 16px">
+            <div class="field" style="margin-bottom: 10px">
+              <label>要合成的文本</label>
+              <textarea
+                v-model="input"
+                class="textarea"
+                rows="3"
+                placeholder="例如：你好，欢迎使用模型中转站。"
+              />
+            </div>
+
+            <div class="grid cols-2" style="gap: 0 14px">
+              <div class="field">
+                <label>音色（可选，留空用上游默认）</label>
+                <input v-model="speechVoice" class="input code" placeholder="alloy / zh-CN-XiaoxiaoNeural" />
+              </div>
+              <div class="field">
+                <label>音频格式</label>
+                <select v-model="speechFormat" class="select">
+                  <option v-for="f in speechFormats" :key="f" :value="f">{{ f }}</option>
+                </select>
+              </div>
+            </div>
+            <div class="hint" style="margin-bottom: 12px">
+              各家音色名不同；固定用一个音色时，可以写在模型的「默认参数」里，例如
+              <code>{"voice": "alloy"}</code>。
+            </div>
+
+            <div class="row">
+              <div class="spacer" />
+              <button class="btn btn-primary btn-sm" :disabled="speechBusy" @click="genSpeech">
+                {{ speechBusy ? '合成中…' : '合成语音' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="speechUrl" class="card">
+            <label>试听</label>
+            <audio :src="speechUrl" controls style="width: 100%; margin-top: 10px" />
+            <div class="row" style="margin-top: 12px">
+              <div class="spacer" />
+              <a class="btn btn-sm" :href="speechUrl" :download="'speech.' + speechFormat">下载音频</a>
+            </div>
+          </div>
+        </template>
+
+        <!-- 语音识别 -->
+        <template v-else-if="capability === 'transcription'">
+          <div class="card" style="margin-bottom: 16px">
+            <div class="field">
+              <label>音频文件</label>
+              <input type="file" accept="audio/*" class="input" @change="pickTranscribeFile" />
+              <div class="hint">
+                {{
+                  transcribeFile
+                    ? `已选择：${transcribeFile.name}（${(transcribeFile.size / 1024).toFixed(0)} KB）`
+                    : '支持 mp3 / wav / m4a 等常见格式，单文件不超过 64MB。'
+                }}
+              </div>
+            </div>
+            <div class="field" style="max-width: 280px">
+              <label>语言（可选）</label>
+              <input v-model="transcribeLanguage" class="input code" placeholder="zh / en，留空自动识别" />
+            </div>
+            <div class="row">
+              <div class="spacer" />
+              <button class="btn btn-primary btn-sm" :disabled="transcribeBusy" @click="runTranscribe">
+                {{ transcribeBusy ? '识别中…' : '开始识别' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="transcribeText || transcribeRaw" class="card">
+            <label>识别结果</label>
+            <div
+              style="
+                margin-top: 10px;
+                padding: 13px 14px;
+                background: var(--bg-elev-2);
+                border-radius: 8px;
+                white-space: pre-wrap;
+                line-height: 1.75;
+              "
+            >
+              {{ transcribeText || '（上游未返回 text 字段）' }}
+            </div>
+            <details style="margin-top: 12px">
+              <summary class="muted" style="cursor: pointer; font-size: 12.5px">上游原始响应</summary>
+              <pre
+                class="mono"
+                style="
+                  margin-top: 10px;
+                  padding: 12px;
+                  background: var(--bg-elev-2);
+                  border-radius: 8px;
+                  overflow: auto;
+                  max-height: 320px;
+                  font-size: 12px;
+                  line-height: 1.6;
+                "
+              >{{ transcribeRaw }}</pre>
+            </details>
+          </div>
+        </template>
+
         <!-- 对话 -->
-        <template v-if="capability === 'chat'">
+        <template v-else-if="capability === 'chat'">
           <div class="chat-wrap">
             <div ref="streamEl" class="chat-stream">
               <div v-if="!msgs.length" class="empty" style="margin: auto">
+                <div class="empty-icon">◇</div>
                 <div class="big">开始一次对话</div>
                 <div>选择模型后输入内容，回复会逐字流式输出。</div>
+                <div class="empty-tips">
+                  <span>Enter 发送 · Shift+Enter 换行</span>
+                  <span v-if="capSkills.length">也可以先点左侧技能套用模板</span>
+                </div>
+                <div v-if="!modelOptions.length" class="empty-cta">
+                  <RouterLink class="btn btn-sm" to="/models">去「模型」页启用一个对话模型</RouterLink>
+                </div>
               </div>
               <div v-for="(m, i) in msgs" :key="i" class="msg" :class="m.role">
                 <div class="avatar">{{ m.role === 'user' ? '我' : 'AI' }}</div>
                 <div class="bubble">
                   <div v-if="m.reasoning" class="reasoning">{{ m.reasoning }}</div>
+                  <div v-if="m.images?.length" class="msg-images">
+                    <img v-for="(src, k) in m.images" :key="k" :src="src" alt="附图" />
+                  </div>
                   <div v-if="m.role === 'assistant'" v-html="renderMarkdown(m.content)" />
                   <div v-else style="white-space: pre-wrap">{{ m.content }}</div>
                   <span
                     v-if="streaming && i === msgs.length - 1 && m.role === 'assistant'"
                     class="typing"
                   />
-                  <div v-if="m.provider || m.routedModel" class="msg-provider">
+                  <div v-if="m.provider || m.routedModel || m.upstream || m.elapsedMS" class="msg-provider">
                     <span v-if="m.provider">上游渠道：{{ m.provider }}</span>
+                    <span v-if="m.upstream"> · 命中上游：{{ m.upstream }}</span>
                     <span v-if="m.routedModel"> · 自动选用：{{ m.routedModel }}</span>
                     <span v-if="m.difficulty">
                       （难度 {{ m.difficulty.score }} · {{ tierLabel(m.difficulty.tier) }}：{{
                         m.difficulty.reason
                       }}）
                     </span>
+                    <span v-if="m.elapsedMS"> · {{ m.elapsedMS }} ms</span>
+                  </div>
+                  <div v-if="m.content && !(streaming && i === msgs.length - 1)" class="msg-actions">
+                    <button class="msg-act" @click="copyMsg(m)">复制</button>
+                    <button
+                      v-if="m.role === 'assistant' && i === msgs.length - 1"
+                      class="msg-act"
+                      @click="regenerate"
+                    >
+                      重新生成
+                    </button>
                   </div>
                 </div>
               </div>
             </div>
             <div class="chat-input">
+              <!-- 待发送的图片：发送前可以逐个摘掉 -->
+              <div v-if="attachments.length" class="attach-strip">
+                <div v-for="a in attachments" :key="a.id" class="attach-item">
+                  <img :src="a.data" :alt="a.name" :title="a.name" />
+                  <button
+                    type="button"
+                    class="attach-x"
+                    aria-label="移除图片"
+                    @click="removeAttachment(a.id)"
+                  >
+                    ×
+                  </button>
+                </div>
+                <span class="muted" style="font-size: 11.5px; align-self: center">
+                  已附 {{ attachments.length }} 张，发送后清空
+                </span>
+              </div>
+
               <textarea
+                ref="chatInputEl"
                 v-model="input"
-                class="textarea"
+                class="textarea chat-input-textarea"
                 rows="2"
-                placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
+                placeholder="输入消息，Enter 发送 / Shift+Enter 换行；可直接 Ctrl+V 粘贴截图"
                 @keydown.enter.exact.prevent="sendChat"
+                @paste="onPaste"
+                @input="autoGrow"
+                @dragover.prevent
+                @drop.prevent="(e) => e.dataTransfer?.files && addAttachments(e.dataTransfer.files)"
               />
               <div class="row" style="margin-top: 10px">
+                <label class="btn btn-sm btn-ghost" style="cursor: pointer" title="添加图片（最多 4 张，单张 ≤ 4MB）">
+                  + 图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style="display: none"
+                    @change="onPickFiles"
+                  />
+                </label>
                 <span class="muted" style="font-size: 12px">
                   {{ selModel ? '目标模型：' + selModel : '请选择模型' }}
                 </span>
                 <div class="spacer" />
                 <button v-if="streaming" class="btn btn-danger btn-sm" @click="stopChat">停止</button>
-                <button class="btn btn-primary btn-sm" :disabled="streaming" @click="sendChat">
+                <button
+                  class="btn btn-primary btn-sm"
+                  :class="{ 'is-loading': streaming }"
+                  :disabled="streaming || !modelOptions.length"
+                  @click="sendChat"
+                >
                   {{ streaming ? '生成中…' : '发送' }}
                 </button>
               </div>
@@ -660,7 +1267,10 @@ async function run() {
                 <img :src="src" alt="生成结果" />
                 <div class="cap">
                   <span>结果 {{ i + 1 }}</span>
-                  <a :href="src" target="_blank" rel="noreferrer">打开原图</a>
+                  <span>
+                    <a :href="src" target="_blank" rel="noreferrer">打开原图</a>
+                    <a :href="src" :download="imgDownloadName(i, src)" style="margin-left: 8px">下载</a>
+                  </span>
                 </div>
               </div>
             </div>
@@ -770,7 +1380,12 @@ async function run() {
 
             <div class="row">
               <div class="spacer" />
-              <button class="btn btn-primary btn-sm" :disabled="videoBusy" @click="genVideo">
+              <button
+                class="btn btn-primary btn-sm"
+                :class="{ 'is-loading': videoBusy }"
+                :disabled="videoBusy || !modelOptions.length"
+                @click="genVideo"
+              >
                 {{ videoBusy ? '处理中…' : '创建视频任务' }}
               </button>
             </div>

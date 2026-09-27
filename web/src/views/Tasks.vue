@@ -75,7 +75,15 @@ function taskLabel(status: string) {
       </div>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="table-wrap">
+      <table class="table">
+        <tbody>
+          <tr v-for="i in 4" :key="i">
+            <td v-for="j in 7" :key="j"><div class="skeleton" /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-else-if="list.length" class="table-wrap">
       <table class="table">
@@ -102,12 +110,12 @@ function taskLabel(status: string) {
             </td>
             <td>
               <div class="progress"><i :style="{ width: (t.progress || 0) + '%' }" /></div>
-              <div class="muted" style="font-size: 11.5px; margin-top: 4px">{{ t.progress || 0 }}%</div>
+              <div class="muted num" style="font-size: 11.5px; margin-top: 4px">{{ t.progress || 0 }}%</div>
             </td>
             <td class="muted nowrap">{{ fmtTime(t.created_at) }}</td>
             <td class="muted nowrap">{{ fmtTime(t.updated_at) }}</td>
             <td>
-              <div class="row" style="justify-content: flex-end; gap: 6px">
+              <div class="row" style="justify-content: flex-end; gap: 4px">
                 <a
                   v-if="t.video_url"
                   class="btn btn-sm btn-ghost"
@@ -128,8 +136,12 @@ function taskLabel(status: string) {
     </div>
 
     <div v-else class="card empty">
+      <div class="empty-icon">▷</div>
       <div class="big">还没有视频任务</div>
       <div>在调试台或通过 /v1/videos 提交任务后，这里会显示进度与结果。</div>
+      <div class="empty-cta">
+        <RouterLink class="btn btn-sm" to="/playground">去调试台生成</RouterLink>
+      </div>
     </div>
   </div>
 </template>

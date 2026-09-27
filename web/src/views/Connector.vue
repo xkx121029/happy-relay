@@ -183,12 +183,20 @@ async function saveAsModel() {
       </div>
     </div>
 
-    <div
-      v-if="!systemModel"
-      class="card"
-      style="margin-bottom: 16px; border-color: rgba(251, 191, 36, 0.4)"
-    >
-      尚未指定系统级 AI。请先到「设置」里选择一个文本对话模型。
+    <div v-if="!systemModel" class="card notice-warn" style="margin-bottom: 16px">
+      <div class="notice-title">尚未指定系统级 AI</div>
+      <div class="notice-body">
+        连接器生成器需要一个文本对话模型来理解接口说明。请先到
+        <RouterLink to="/settings">设置</RouterLink> 里选择一个「系统级 AI」。
+      </div>
+    </div>
+
+    <div v-else-if="!providers.length" class="card notice-warn" style="margin-bottom: 16px">
+      <div class="notice-title">还没有可挂载的渠道</div>
+      <div class="notice-body">
+        生成的模板最终要挂到某个渠道上。请先到
+        <RouterLink to="/providers">渠道</RouterLink> 添加一个上游渠道，再回来生成。
+      </div>
     </div>
 
     <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; align-items: start">
@@ -224,7 +232,12 @@ async function saveAsModel() {
           <label>示例响应</label>
           <textarea v-model="form.sample_response" class="textarea code" rows="4" placeholder='{"data": {"task_id": "..."}}' />
         </div>
-        <button class="btn btn-primary btn-block" :disabled="generating || !systemModel" @click="generate">
+        <button
+          class="btn btn-primary btn-block"
+          :class="{ 'is-loading': generating }"
+          :disabled="generating || !systemModel"
+          @click="generate"
+        >
           {{ generating ? '生成中…' : '生成模板草案' }}
         </button>
         <div class="hint" style="text-align: center">系统级 AI：{{ systemModel || '未指定' }}</div>

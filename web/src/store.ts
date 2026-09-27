@@ -144,10 +144,21 @@ export function resolveConfirm(ok: boolean) {
 
 let toastSeq = 0
 
+// toast 会「排队去重」：短时间内同文案同类型的提示只留一条，避免连点按钮刷屏。
 export function toast(message: string, type: ToastItem['type'] = 'success') {
+  const dup = toasts.value.find((t) => t.message === message && t.type === type)
+  if (dup) {
+    dup.id = ++toastSeq
+    return
+  }
   const id = ++toastSeq
   toasts.value.push({ id, type, message })
-  setTimeout(() => {
-    toasts.value = toasts.value.filter((t) => t.id !== id)
-  }, 3600)
+  if (toasts.value.length > 4) {
+    toasts.value.splice(0, toasts.value.length - 4)
+  }
+  setTimeout(() => dismissToast(id), 3600)
+}
+
+export function dismissToast(id: number) {
+  toasts.value = toasts.value.filter((t) => t.id !== id)
 }

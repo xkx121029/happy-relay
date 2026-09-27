@@ -33,6 +33,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kinds": []map[string]any{
 			{"value": store.KindOpenAI, "label": "OpenAI 兼容", "hint": "绝大多数中转商与自部署服务，接口为 /v1/chat/completions"},
+			{"value": store.KindZhipu, "label": "智谱 GLM", "hint": "智谱开放平台，端点为 /api/paas/v4，协议与 OpenAI 一致"},
 			{"value": store.KindGemini, "label": "Google Gemini", "hint": "官方 generateContent 协议，密钥走 x-goog-api-key"},
 			{"value": store.KindAnthropic, "label": "Anthropic Claude", "hint": "官方 Messages 协议，密钥走 x-api-key"},
 			{"value": store.KindTemplate, "label": "自定义模板", "hint": "手填请求体模板与响应字段路径，可接任意 HTTP 上游"},
@@ -42,6 +43,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			{"value": store.CapImage, "label": "图片生成", "endpoint": "POST /v1/images/generations"},
 			{"value": store.CapVideo, "label": "视频生成", "endpoint": "POST /v1/videos"},
 			{"value": store.CapEmbedding, "label": "文本向量", "endpoint": "POST /v1/embeddings"},
+			{"value": store.CapSpeech, "label": "语音合成", "endpoint": "POST /v1/audio/speech"},
+			{"value": store.CapTranscription, "label": "语音识别", "endpoint": "POST /v1/audio/transcriptions"},
 		},
 		"strategies": []map[string]any{
 			{"value": "round_robin", "label": "轮询", "hint": "多个入口与密钥依次轮转，均摊压力"},
@@ -49,6 +52,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			{"value": "failover", "label": "主备", "hint": "始终优先第一个入口，失败才切到后面的"},
 		},
 		"video_presets": videoPresets(),
+		"model_presets": store.ModelPresets(),
 		"settings":      settings,
 		// runtime 暴露当前生效的运行参数与默认值，供设置页展示「留空即用默认」。
 		"runtime": map[string]any{
@@ -67,7 +71,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	daily, _ := s.st.DailyCalls(14)
-	logs, _ := s.st.ListUsageLogs(8, "", "")
+	logs, _ := s.st.ListUsageLogs(8, 0, "", "")
 	tasks, _ := s.st.ListVideoTasks(5)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"stats": stats, "daily": daily, "recent_logs": logs, "recent_tasks": tasks,
@@ -113,16 +117,18 @@ func (s *Server) handleProviderDelete(w http.ResponseWriter, r *http.Request) {
 // handleProviderTest 探测渠道连通性：逐个入口地址 + 首个密钥试一次轻量请求。
 func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID      int64  `json:"id"`
-		Kind    string `json:"kind"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		ID            int64  `json:"id"`
+		Kind          string `json:"kind"`
+		BaseURL       string `json:"base_url"`
+		APIKey        string `json:"api_key"`
+		NoVersionPath bool   `json:"no_version_path"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "参数解析失败："+err.Error())
 		return
 	}
 	kind := req.Kind
+	noVersionPath := req.NoVersionPath
 	var urls []string
 	key := strings.TrimSpace(req.APIKey)
 	if req.ID > 0 {
@@ -134,6 +140,7 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 		if kind == "" {
 			kind = p.Kind
 		}
+		noVersionPath = p.NoVersionPath
 		urls = p.BaseURLs
 		if key == "" && len(p.APIKeys) > 0 {
 			key = p.APIKeys[0]
@@ -154,9 +161,10 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 
 	type result = probeResult
 	results := make([]result, 0, len(urls))
-	client := &http.Client{Timeout: 20 * time.Second}
+	pctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
 	for _, raw := range urls {
-		results = append(results, probeUpstream(r.Context(), client, kind, raw, key))
+		results = append(results, probeUpstream(pctx, probeClient, kind, raw, key, noVersionPath))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
@@ -168,6 +176,9 @@ type probeModel struct {
 	Hint       string `json:"hint,omitempty"`
 	// ContextLength 是从上游模型列表里读到的上下文窗口，读不到时为 0。
 	ContextLength int `json:"context_length,omitempty"`
+	// InputModalities / OutputModalities 是推断出的输入与输出模态。
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
 }
 
 // contextLengthKeys 是上游模型列表里可能出现的上下文长度字段。
@@ -226,12 +237,15 @@ type probeResult struct {
 	Models  []probeModel `json:"models,omitempty"`
 }
 
-func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key string) probeResult {
+// probeUpstream 探测某个入口地址是否连通。
+// 返回值必须命名，否则 defer 里写回的延迟只会改到局部副本上，
+// 调用方拿到的永远是 0——这个坑在巡检功能上线时才暴露出来。
+func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key string, noVersionPath bool) (out probeResult) {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base != "" && !strings.HasPrefix(base, "http") {
 		base = "https://" + base
 	}
-	out := probeResult{URL: baseURL}
+	out = probeResult{URL: baseURL}
 	start := time.Now()
 	defer func() { out.Latency = time.Since(start).Milliseconds() }()
 
@@ -252,8 +266,10 @@ func probeUpstream(ctx context.Context, client *http.Client, kind, baseURL, key 
 		}
 		headers["anthropic-version"] = "2023-06-01"
 	default:
+		// 已带版本段的端点（如智谱的 /api/paas/v4）不再补 /v1；
+		// 标记 no_version_path 的端点（如 GitHub Models）接口挂在根路径，也不补。
 		url = strings.TrimRight(base, "/")
-		if !strings.HasSuffix(url, "/v1") {
+		if !noVersionPath && !relay.HasVersionPath(url) {
 			url += "/v1"
 		}
 		url += "/models"
@@ -320,9 +336,12 @@ func extractModels(raw map[string]any, kind string) []probeModel {
 		}
 		seen[id] = true
 		capability, hint := inferCapability(id, obj, kind)
+		inputs, outputs := store.GuessModalities(id, capability)
 		out = append(out, probeModel{
 			ID: id, Capability: capability, Hint: hint,
-			ContextLength: pickContextLength(obj),
+			ContextLength:    pickContextLength(obj),
+			InputModalities:  inputs,
+			OutputModalities: outputs,
 		})
 	}
 	switch data := raw["data"].(type) {
@@ -439,13 +458,31 @@ func normalizeCapability(raw string) string {
 
 // ---------- 模型 ----------
 
+// modelView 在模型行上附加「当前是否可用」标记（是否有可用渠道兜底）。
+type modelView struct {
+	store.Model
+	Usable bool `json:"usable"`
+}
+
+// handleModelList 返回模型列表。
+// 默认只返回可用模型（至少绑定一个可用渠道），把调不通的挡在列表外；
+// ?all=1 返回全量并给每行附带 usable 字段，供模型页做「可用/不可用」筛选与管理。
 func (s *Server) handleModelList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.st.ListModels()
 	if err != nil {
 		writeStoreErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	if r.URL.Query().Get("all") == "1" {
+		flags := s.modelUsableFlags(list)
+		out := make([]modelView, len(list))
+		for i, m := range list {
+			out[i] = modelView{Model: m, Usable: flags[i]}
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.filterUsableModels(list))
 }
 
 func (s *Server) handleModelSave(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +511,58 @@ func (s *Server) handleModelDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 对外秘钥 ----------
+
+// handleUpstreamStats 返回上游健康画像：以引擎内存实时值为主（含启动时载入的
+// 历史基线 + 本次进程的增量），库里多余的条目兜底，重启不丢、面板看实时。
+func (s *Server) handleUpstreamStats(w http.ResponseWriter, r *http.Request) {
+	list, err := s.st.ListUpstreamStats()
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	mem := s.eng.StatsSnapshot()
+	out := make([]map[string]any, 0, len(list))
+	seen := map[string]bool{}
+	for _, st := range list {
+		key := fmt.Sprintf("%d::%s", st.ProviderID, st.UpstreamName)
+		if v, ok := mem[key]; ok {
+			st.OKCount, st.FailCount, st.ConsecFails = v.OKCount, v.FailCount, v.ConsecFails
+			st.AvgLatencyMS = v.AvgLatencyMS
+			st.LastOKAt, st.LastFailAt, st.LastError = v.LastOKAt, v.LastFailAt, v.LastError
+		}
+		seen[key] = true
+		out = append(out, statToMap(st))
+	}
+	// 内存里有、库里还没有（尚未落盘）的条目也补上。
+	for key, v := range mem {
+		if seen[key] {
+			continue
+		}
+		pid := int64(0)
+		var name string
+		fmt.Sscanf(key, "%d::%s", &pid, &name)
+		if pid <= 0 || name == "" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"provider_id": pid, "upstream_name": name,
+			"ok_count": v.OKCount, "fail_count": v.FailCount, "consec_fails": v.ConsecFails,
+			"avg_latency_ms": v.AvgLatencyMS, "last_ok_at": v.LastOKAt,
+			"last_fail_at": v.LastFailAt, "last_error": v.LastError,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func statToMap(st store.UpstreamStat) map[string]any {
+	return map[string]any{
+		"provider_id": st.ProviderID, "provider_name": st.ProviderName, "upstream_name": st.UpstreamName,
+		"ok_count": st.OKCount, "fail_count": st.FailCount, "consec_fails": st.ConsecFails,
+		"avg_latency_ms": st.AvgLatencyMS, "success_rate": st.SuccessRate(),
+		"last_ok_at": st.LastOKAt, "last_fail_at": st.LastFailAt, "last_error": st.LastError,
+		"updated_at": st.UpdatedAt,
+	}
+}
 
 func (s *Server) handleKeyList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.st.ListAPIKeys()
@@ -589,7 +678,10 @@ func (s *Server) handleLogList(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("limit"); v != "" {
 		fmt.Sscanf(v, "%d", &limit)
 	}
-	list, err := s.st.ListUsageLogs(limit, r.URL.Query().Get("capability"), r.URL.Query().Get("q"))
+	// before = 上一页最后一条的 id，实现「加载更多」游标分页。
+	var before int64
+	fmt.Sscanf(r.URL.Query().Get("before"), "%d", &before)
+	list, err := s.st.ListUsageLogs(limit, before, r.URL.Query().Get("capability"), r.URL.Query().Get("q"))
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -630,6 +722,11 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 	// 让运行参数立即生效，无需重启服务。
 	s.reloadOptions()
+	// 再平衡的模式与阈值也来自设置，保存后立即刷新，
+	// 否则用户改了模式要等下一轮巡检才会生效。
+	s.refreshBalance()
+	// 飞书长连接按最新设置同步（配置变了会自动关旧起新）。
+	s.FeishuSyncWSClient()
 	settings, _ := s.st.AllSettings()
 	writeJSON(w, http.StatusOK, settings)
 }
@@ -647,6 +744,14 @@ func (s *Server) staticHandler() http.Handler {
 		if path == "" {
 			path = "index.html"
 		}
+		// Vite 的 assets/ 产物文件名带内容 hash，可以放心缓存一年；
+		// 其余（index.html 与 SPA 路由回落）标记 no-cache，
+		// 保证发版后浏览器立刻拿到新 HTML，再由它引用新 hash 资源。
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		if _, err := s.static.Open(path); err != nil {
 			// 前端为单页应用，未命中的路径统一回落到 index.html
 			r = r.Clone(r.Context())
@@ -658,7 +763,16 @@ func (s *Server) staticHandler() http.Handler {
 
 // videoPresets 提供常见视频上游的模板预设，方便一把导入。
 func videoPresets() []map[string]any {
+	zhipuSubmit, zhipuQuery := store.ZhipuVideoSpecs()
 	return []map[string]any{
+		{
+			"name": "智谱 CogVideoX",
+			"description": "创建走 /videos/generations，查询走 /async-result/{id}；" +
+				"查询响应不含状态字段，由是否产出 video_result[0].url 判定完成。",
+			"capability":  store.CapVideo,
+			"video":       zhipuSubmit,
+			"video_query": zhipuQuery,
+		},
 		{
 			"name": "Agnes Video 2.5 Flash",
 			"description": "创建走 /v1/videos，查询走根路径 /agnesapi；支持 text / keyframe / reference " +

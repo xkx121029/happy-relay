@@ -413,6 +413,22 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 挑选时还会检查上下文容量：同一档位内优先选择窗口装得下本次请求的模型；若都装不下，则退回窗口最大的那个，并在理由里说明。
 
+**逐模型故障转移**：`auto` 拿到的是**一整串候选模型**（按档位优先、容量足够的靠前），调用时会依次尝试：
+
+```
+候选：A-Broken → B-Broken → C-Good
+实际：A 失败 → B 失败 → C 成功，返回 C 的结果
+```
+
+只有全部候选都失败才会报错，错误信息是最后一次失败的原因。
+
+切换的前提是**尚未向客户端下发任何内容**：一旦有 delta 发出就立即停止切换。所以：
+
+- 非流式请求：客户端完全无感，只是响应慢一点
+- 流式请求：如果首个模型在吐出任何内容前就失败，可以安全切换；如果已经开始输出正文，则不再切换（避免两个模型的内容拼在一起）
+
+响应与日志里的 `model` 字段记录的是**最终命中的那个模型**，而 `requested` 保留客户端请求的 `auto`。
+
 ### 上下文长度与容量规划
 
 **自动获取**：探测渠道时，服务端会从上游 `/v1/models` 的返回里读取上下文窗口并写入模型库，识别 `context_length`、`context_window`、`max_input_tokens`、`inputTokenLimit`、`max_tokens` 等字段，以及 `top_provider` / `model_info` 这类嵌套结构。模型库页面可以直接看到并手工修正。
@@ -439,6 +455,64 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 ---
 
+### 11. 语音合成
+
+`POST /v1/audio/speech` 把文本转成语音，响应是**音频字节流**而不是 JSON。
+
+```json
+{
+  "model": "tts-1",
+  "input": "你好，欢迎使用模型中转站。",
+  "voice": "alloy",
+  "response_format": "mp3",
+  "speed": 1.0
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `model` | 是 | 对外模型名，能力需为「语音合成」 |
+| `input` | 是 | 要合成的文本 |
+| `voice` | 否 | 音色名，各家不同；固定用一个音色时建议写进模型「默认参数」 |
+| `response_format` | 否 | `mp3` / `wav` / `opus` / `aac` / `flac` / `pcm` |
+| `speed` | 否 | 语速倍率 |
+
+其余字段原样透传给上游；模型的「默认参数」会自动补齐未传的项（例如统一的音色）。
+
+响应体就是音频，`Content-Type` 取自上游（默认 `audio/mpeg`）。上游报错时返回 JSON 错误，并自动切换到下一个上游。
+
+```bash
+curl -s http://127.0.0.1:8080/v1/audio/speech \
+  -H "Authorization: Bearer sk-xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"你好","voice":"alloy"}' \
+  -o hello.mp3
+```
+
+### 12. 语音识别
+
+`POST /v1/audio/transcriptions` 把音频转成文字，请求体是 `multipart/form-data`。
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `file` | 是 | 音频文件，常见格式均可，单个文件上限 64MB |
+| `model` | 是 | 对外模型名，能力需为「语音识别」 |
+| `language` | 否 | 语言代码，如 `zh`、`en`，留空由上游自动识别 |
+| `prompt` | 否 | 提示上下文，可提升专有名词的准确率 |
+| `response_format` | 否 | `json` / `text` / `verbose_json` 等 |
+
+除 `file` 与 `model` 外的字段原样转发（`model` 会被换成本次命中的上游模型名）。返回上游的完整响应，通常是 `{"text": "..."}`；`verbose_json` 模式下还会带分段与时长。
+
+```bash
+curl -s http://127.0.0.1:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-xxx" \
+  -F "file=@meeting.mp3" \
+  -F "model=whisper-1" \
+  -F "language=zh"
+```
+
+> 语音能力目前由 OpenAI 兼容渠道提供（OpenAI、Groq、SiliconFlow、智谱等都有兼容端点，渠道类型选「OpenAI 兼容」即可）。Gemini、Anthropic 原生协议与模板渠道暂不支持，命中时会返回「该渠道不支持此能力」。
+
 ## 二、面板接口 `/api`
 
 供网页控制台使用，无鉴权。
@@ -449,6 +523,25 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | --- | --- | --- |
 | GET | `/api/meta` | 返回渠道类型、能力类型、调度策略、视频模板预设与全部设置项 |
 | GET | `/api/overview` | 概览统计、近 14 天调用趋势、最近 8 条日志、最近 5 个视频任务 |
+| GET | `/api/setup` | 首次进入的引导状态：内置渠道与模型、是否还缺 API Key、访问秘钥数量 |
+| POST | `/api/setup` | 提交引导：写入内置渠道的 API Key，可选顺带生成访问秘钥 |
+
+`/api/setup` 服务于面板首次进入的引导：部署时会把内置的免费模型（「智谱 GLM」渠道 + 6 个免费模型）直接写入数据库，这个接口返回它们目前的就绪情况。提交时可以带 `api_key` 写入内置渠道的密钥，带 `create_access_key` 顺带生成一个访问秘钥（明文只在本次响应里返回，之后列表只显示掩码）。
+
+```json
+{
+  "seeded": true,
+  "provider_id": 1,
+  "provider_name": "智谱 GLM",
+  "provider_kind": "zhipu",
+  "models": ["GLM-4.7-Flash", "GLM-4.6V-Flash", "CogView-3-Flash"],
+  "needs_key": true,
+  "signup_url": "https://open.bigmodel.cn/usercenter/apikeys",
+  "access_keys": 0
+}
+```
+
+内置渠道与模型只播种一次：用户删掉某个内置模型后，重启不会把它塞回来（标记写在 `settings` 里，与模型本身的存亡无关）。想恢复就删掉数据目录重新部署，或到「模型」页用内置预设重新导入。
 
 `/api/overview` 响应形状：
 
@@ -482,6 +575,93 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 ### 渠道 providers
 
 一个渠道 = 一个上游供应商，可以填多个入口地址与多个密钥。
+
+**接入智谱 GLM**
+
+渠道类型选「智谱 GLM」，入口地址留空即用官方端点，也可以只填域名（会自动补全为 `/api/paas/v4`）：
+
+| 填写方式 | 最终端点 |
+| --- | --- |
+| 留空 | `https://open.bigmodel.cn/api/paas/v4` |
+| `open.bigmodel.cn` | `https://open.bigmodel.cn/api/paas/v4` |
+| `https://open.bigmodel.cn/api/paas/v4` | 原样使用，不会再补 `/v1` |
+
+密钥填开放平台的 API Key，鉴权走 `Authorization: Bearer`。模型编辑里的上游模型名填 `glm-4.7-flash`（官方 200K 上下文，会自动推断出来）。
+
+GLM 的思考模式由顶层 `thinking` 参数控制，中转站原样透传，写进模型的「默认参数」即可全局生效：
+
+```json
+{ "thinking": { "type": "enabled" } }
+```
+
+流式返回的 `delta.reasoning_content` 会被归一化成 OpenAI 的 `reasoning_content`，调试台可以直接看到思考过程。
+
+### 多上游与模态路由
+
+一个对外模型可以绑定**同一个渠道下的多个上游模型**，例如把 GLM 平台的文本模型与视觉模型挂在同一个对外模型上：
+
+```json
+{
+  "name": "GLM-Auto",
+  "capability": "chat",
+  "inputs": [
+    { "provider_id": 1, "upstream_name": "glm-4.7-flash", "input_modalities": ["text"] },
+    { "provider_id": 1, "upstream_name": "glm-4.6v-flash", "input_modalities": ["text", "image"] }
+  ]
+}
+```
+
+运行时行为：
+
+| 场景 | 结果 |
+| --- | --- |
+| 纯文本请求 | 命中第一个（`glm-4.7-flash`） |
+| 消息里带图片 | 自动跳过不支持读图的模型，改走 `glm-4.6v-flash` |
+| 命中的上游报错 | 自动切到列表里的下一个上游模型 |
+| 列表内全部失败 | 再按渠道绑定顺序切到其他渠道 |
+
+`input_modalities` / `output_modalities` 留空时会按上游模型名自动推断（`-v` / `4.6v` → 能读图，`vision` → 视觉，`cogview` → 出图，`cogvideox` → 出视频）。探测渠道时也会把推断结果写入模型库，可在面板里查看与修正。
+
+模态取值：`text`、`image`、`video`、`file`、`audio`。
+
+### 调试台：指定上游
+
+面板调试台的请求体支持两个额外字段，用于把本次调用钉到指定上游：
+
+| 字段 | 说明 |
+| --- | --- |
+| `provider_id` | 只走这个渠道，失败不再切到其它渠道 |
+| `upstream_name` | 只走这个上游模型名 |
+
+可以只给 `provider_id`（钉住渠道，保留该渠道下的全部上游），也可以两个都给（精确到某一条）。钉住之后不再自动切换，因此拿到的就是目标上游真实的报错，便于定位问题。
+
+指定的组合即使不在模型配置里也允许尝试，方便调试尚未登记的上游。
+
+```json
+{
+  "model": "Pin-Test",
+  "messages": [{ "role": "user", "content": "你好" }],
+  "provider_id": 1,
+  "upstream_name": "broken-model"
+}
+```
+
+这两个字段**只对面板调试台生效**：对外 `/v1` 接口即使传了也会被忽略并从请求体中摘除，客户端无法借此绕过模型配置。调试台选好上游后，界面会提示"只走这一个上游，失败不再切换"。
+
+### 内置免费模型
+
+模型页的「内置模型」按钮提供 6 个智谱 GLM 免费模型，选好渠道即可一键创建，参数（上游模型名、能力、模态、上下文、视频模板）全部自动配好：
+
+| 模型 | 输入 → 输出 | 说明 |
+| --- | --- | --- |
+| GLM-4.7-Flash | 文本 → 文本 | 200K 上下文，默认开启深度思考 |
+| GLM-4.6V-Flash | 文本/图/视频/文档 → 文本 | 128K 上下文 |
+| GLM-4V-Flash | 文本/图 → 文本 | 图像理解 |
+| GLM-4.1V-Thinking-Flash | 文本/图/视频/文档 → 文本 | 视觉推理 |
+| CogView-3-Flash | 文本 → 图片 | 文生图 |
+| CogVideoX-Flash | 文本/图 → 视频 | 文生视频 / 图生视频 |
+
+使用前提是先在「渠道」里创建一个「智谱 GLM」类型的渠道并填入 API Key。CogVideoX 的提交与查询模板（`/videos/generations` + `/async-result/{id}`）会随预设自动写入。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -747,6 +927,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | POST | `/api/playground/chat` | 对话，请求体与 `/v1/chat/completions` 一致，可加 `stream` |
 | POST | `/api/playground/image` | 图片，请求体与 `/v1/images/generations` 一致 |
 | POST | `/api/playground/video` | 视频，请求体与 `/v1/videos` 一致 |
+| POST | `/api/playground/speech` | 语音合成，请求体与 `/v1/audio/speech` 一致，直接返回音频流 |
+| POST | `/api/playground/transcriptions` | 语音识别，multipart 上传，字段与 `/v1/audio/transcriptions` 一致 |
 
 可选加两个字段套用技能：
 

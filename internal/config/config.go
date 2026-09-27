@@ -23,6 +23,7 @@ type Config struct {
 	HeartbeatSec   int    // SSE 心跳间隔（秒），0 表示关闭
 	BreakerFails   int    // 渠道连续失败多少次后熔断（0 关闭）
 	BreakerCoolSec int    // 熔断冷却时间（秒）
+	AlertWebhook   string // 渠道熔断/失败时推送告警的 Webhook 地址（飞书/企业微信机器人）
 }
 
 func Load() *Config {
@@ -41,6 +42,7 @@ func Load() *Config {
 		HeartbeatSec:   getenvIntZero("RELAY_SSE_HEARTBEAT", 15),
 		BreakerFails:   getenvIntZero("RELAY_BREAKER_FAILS", 5),
 		BreakerCoolSec: getenvInt("RELAY_BREAKER_COOLDOWN", 60),
+		AlertWebhook:   getenv("RELAY_ALERT_WEBHOOK", ""),
 	}
 	return cfg
 }

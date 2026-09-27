@@ -21,7 +21,9 @@ type Store struct {
 
 // Open 打开（并在需要时创建）数据库，随后执行建表迁移。
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path)
+	// synchronous(NORMAL) 在 WAL 模式下是官方推荐档位：不用每次提交都 fsync，
+	// 写吞吐提升明显；代价是断电时可能丢最后一个事务，但不会损坏数据库。
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -143,16 +145,18 @@ CREATE INDEX IF NOT EXISTS idx_video_tasks_created ON video_tasks(created_at DES
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 
 CREATE TABLE IF NOT EXISTS catalog_models (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider_id    INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-  model_id       TEXT    NOT NULL,
-  capability     TEXT    NOT NULL DEFAULT 'chat',
-  source         TEXT    NOT NULL DEFAULT 'probe',
-  enabled        INTEGER NOT NULL DEFAULT 1,
-  context_length INTEGER NOT NULL DEFAULT 0,
-  remark         TEXT    NOT NULL DEFAULT '',
-  created_at     TEXT    NOT NULL,
-  updated_at     TEXT    NOT NULL
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id       INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id          TEXT    NOT NULL,
+  capability        TEXT    NOT NULL DEFAULT 'chat',
+  source            TEXT    NOT NULL DEFAULT 'probe',
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  context_length    INTEGER NOT NULL DEFAULT 0,
+  input_modalities  TEXT    NOT NULL DEFAULT '[]',
+  output_modalities TEXT    NOT NULL DEFAULT '[]',
+  remark            TEXT    NOT NULL DEFAULT '',
+  created_at        TEXT    NOT NULL,
+  updated_at        TEXT    NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_provider_model ON catalog_models(provider_id, model_id);
@@ -161,6 +165,37 @@ CREATE INDEX IF NOT EXISTS idx_catalog_provider ON catalog_models(provider_id);
 CREATE TABLE IF NOT EXISTS settings (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
+);
+
+-- health_checks 记录后台巡检的每次结果，用于算可用率与画趋势。
+-- 只保留近期数据（由巡检循环按上限裁剪），不做长期归档。
+CREATE TABLE IF NOT EXISTS health_checks (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id INTEGER NOT NULL,
+  ok          INTEGER NOT NULL DEFAULT 0,
+  status      INTEGER NOT NULL DEFAULT 0,
+  latency_ms  INTEGER NOT NULL DEFAULT 0,
+  error       TEXT    NOT NULL DEFAULT '',
+  checked_at  TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_checks_provider ON health_checks(provider_id, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_checks_time ON health_checks(checked_at DESC);
+
+-- upstream_stats 是「渠道 × 上游模型」的健康画像：每次真实调用滚动累计，
+-- 供路由自学习（连续失败的上游排到尝试队列尾部）与面板展示，重启不丢。
+CREATE TABLE IF NOT EXISTS upstream_stats (
+  provider_id   INTEGER NOT NULL,
+  upstream_name TEXT    NOT NULL,
+  ok_count      INTEGER NOT NULL DEFAULT 0,
+  fail_count    INTEGER NOT NULL DEFAULT 0,
+  consec_fails  INTEGER NOT NULL DEFAULT 0,
+  avg_latency   REAL    NOT NULL DEFAULT 0,
+  last_ok_at    TEXT    NOT NULL DEFAULT '',
+  last_fail_at  TEXT    NOT NULL DEFAULT '',
+  last_error    TEXT    NOT NULL DEFAULT '',
+  updated_at    TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (provider_id, upstream_name)
 );
 `
 
@@ -179,13 +214,37 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("catalog_models", "context_length", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// catalog_models 表补充输入 / 输出模态列，供按模态路由使用。
+	if err := s.addColumnIfMissing("catalog_models", "input_modalities", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("catalog_models", "output_modalities", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	// api_keys 表补充配额列。
 	for _, col := range []string{"rpm", "daily_quota", "daily_tokens"} {
 		if err := s.addColumnIfMissing("api_keys", col, "INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
 	}
-	return s.seedBuiltinSkills()
+	// 渠道表补充加权负载均衡权重列。
+	if err := s.addColumnIfMissing("providers", "weight", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	// 渠道表补充「无版本前缀」标记：部分 OpenAI 兼容端点（如 GitHub Models）
+	// 接口直接挂在根路径，不需要自动补 /v1，否则会被拼成 404。
+	if err := s.addColumnIfMissing("providers", "no_version_path", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 调用日志补充成本列，供按模型计费统计。
+	if err := s.addColumnIfMissing("usage_logs", "cost", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.seedBuiltinSkills(); err != nil {
+		return err
+	}
+	// 首次启动就把内置的免费模型装好，部署完直接可用。
+	return s.seedBuiltinPresets()
 }
 
 // addColumnIfMissing 为已存在的表补充新列，用于无版本号的轻量迁移。
@@ -221,6 +280,9 @@ func (s *Store) addColumnIfMissing(table, column, ddl string) error {
 }
 
 func now() string { return time.Now().Format(time.RFC3339) }
+
+// NowString 返回当前时间的 RFC3339 表示，供跨包写入时间戳时统一格式。
+func NowString() string { return now() }
 
 func marshal(v any) string {
 	b, err := json.Marshal(v)

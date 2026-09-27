@@ -141,7 +141,15 @@ function expired(k: APIKey) {
       </div>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="table-wrap">
+      <table class="table">
+        <tbody>
+          <tr v-for="i in 4" :key="i">
+            <td v-for="j in 7" :key="j"><div class="skeleton" /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-else-if="list.length" class="table-wrap">
       <table class="table">
@@ -150,7 +158,7 @@ function expired(k: APIKey) {
             <th>名称</th>
             <th>秘钥</th>
             <th>可用模型</th>
-            <th>调用次数</th>
+            <th class="num">调用次数</th>
             <th>状态</th>
             <th>最近使用</th>
             <th style="text-align: right">操作</th>
@@ -160,10 +168,10 @@ function expired(k: APIKey) {
           <tr v-for="k in list" :key="k.id">
             <td>
               <div style="font-weight: 600">{{ k.name }}</div>
-              <div v-if="k.remark" class="muted" style="font-size: 12px">{{ k.remark }}</div>
+              <div v-if="k.remark" class="muted" style="font-size: 11.5px">{{ k.remark }}</div>
             </td>
             <td>
-              <div class="row" style="gap: 8px">
+              <div class="row" style="gap: 6px">
                 <span class="mono dim">{{ mask(k.key) }}</span>
                 <button class="btn btn-sm btn-ghost" @click="copy(k.key)">复制</button>
               </div>
@@ -172,7 +180,7 @@ function expired(k: APIKey) {
               <span v-if="!k.models.length" class="badge brand">全部模型</span>
               <span v-else class="dim">{{ k.models.length }} 个</span>
             </td>
-            <td class="dim">{{ k.calls ?? 0 }}</td>
+            <td class="num dim">{{ k.calls ?? 0 }}</td>
             <td>
               <span
                 class="badge"
@@ -181,13 +189,13 @@ function expired(k: APIKey) {
                 <span class="dot" />
                 {{ !k.enabled ? '停用' : expired(k) ? '已过期' : '启用' }}
               </span>
-              <div v-if="k.expires_at" class="muted" style="font-size: 11.5px; margin-top: 4px">
+              <div v-if="k.expires_at" class="muted nowrap" style="font-size: 11.5px; margin-top: 4px">
                 {{ k.expires_at.slice(0, 10) }} 到期
               </div>
             </td>
             <td class="muted nowrap">{{ k.last_used_at ? relative(k.last_used_at) : '—' }}</td>
             <td>
-              <div class="row" style="justify-content: flex-end; gap: 6px">
+              <div class="row" style="justify-content: flex-end; gap: 4px">
                 <button class="btn btn-sm btn-ghost" @click="openEdit(k)">编辑</button>
                 <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="remove(k)">
                   删除
@@ -200,14 +208,21 @@ function expired(k: APIKey) {
     </div>
 
     <div v-else class="card empty">
+      <div class="empty-icon">⚿</div>
       <div class="big">还没有秘钥</div>
       <div>创建后把「Base URL + API Key」填进任意 OpenAI 兼容客户端即可使用。</div>
+      <div class="empty-cta">
+        <button class="btn btn-primary btn-sm" @click="openCreate">新建第一把秘钥</button>
+      </div>
     </div>
 
     <Modal
       v-if="editing"
       :title="form.id ? '编辑秘钥' : '新建秘钥'"
       :subtitle="form.id ? '' : '保存后会自动生成一把 sk- 开头的随机秘钥。'"
+      submit-on-enter
+      :busy="saving"
+      @submit="save"
       @close="editing = false"
     >
       <div class="field">

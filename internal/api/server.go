@@ -26,12 +26,38 @@ type Server struct {
 	eng     *relay.Engine
 	static  fs.FS
 	limiter *keyLimiter
+	// cache 是统一的非流式响应缓存（按模型+请求体 hash）。
+	cache *responseCache
+	// mlimiter 是按对外模型的 RPM/TPM 滑动窗口限速器。
+	mlimiter *modelLimiter
+	// ag 是告警去抖闸门：按 scope（模型名）统计近期失败次数，达到阈值才推送。
+	ag *alertGate
 	// opts 缓存当前生效的运行参数，保存设置后热更新，读取无锁。
 	opts atomic.Pointer[Options]
+	// us 缓存渠道可用性集合（带 TTL），供模型列表过滤与引擎选路共用。
+	us usableCache
 }
 
 func New(cfg *config.Config, st *store.Store, eng *relay.Engine, static fs.FS) *Server {
-	s := &Server{cfg: cfg, st: st, eng: eng, static: static, limiter: newKeyLimiter()}
+	s := &Server{
+		cfg:      cfg,
+		st:       st,
+		eng:      eng,
+		static:   static,
+		limiter:  newKeyLimiter(),
+		cache:    newResponseCache(),
+		mlimiter: newModelLimiter(),
+		ag:       newAlertGate(),
+	}
+	// 引擎选路时跳过「不可能调通」的渠道：没配密钥、连通巡检也没通过过的
+	// 内置渠道。这让 Chat/auto 的故障转移不再把尝试浪费在注定 401 的渠道上。
+	eng.UsableFilter = func(p store.Provider) bool {
+		set, _, err := s.usableSnapshot()
+		if err != nil {
+			return true // 判定失败时不拦，保持可用
+		}
+		return set[p.ID]
+	}
 	s.reloadOptions()
 	return s
 }
@@ -49,6 +75,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.withKey(s.handleChat))
 	mux.HandleFunc("POST /v1/completions", s.withKey(s.handleLegacyCompletion))
 	mux.HandleFunc("POST /v1/embeddings", s.withKey(s.handleEmbeddings))
+	mux.HandleFunc("POST /v1/audio/speech", s.withKey(s.handleSpeech))
+	mux.HandleFunc("POST /v1/audio/transcriptions", s.withKey(s.handleTranscription))
 	mux.HandleFunc("POST /v1/images/generations", s.withKey(s.handleImage))
 	mux.HandleFunc("GET /v1/videos", s.withKey(s.handleVideoList))
 	mux.HandleFunc("POST /v1/videos", s.withKey(s.handleVideoCreate))
@@ -57,6 +85,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/videos/{id}/stream", s.withKey(s.handleVideoStream))
 	// 兼容以 /generations 结尾的创建写法（查询统一走 /v1/videos/{id}）
 	mux.HandleFunc("POST /v1/videos/generations", s.withKey(s.handleVideoCreate))
+
+	// ---------- 透传类接口（仅 OpenAI 兼容上游） ----------
+	mux.HandleFunc("POST /v1/responses", s.withKey(s.handleResponses))
+	mux.HandleFunc("GET /v1/batches", s.withKey(s.handleBatchesList))
+	mux.HandleFunc("POST /v1/batches", s.withKey(s.handleBatchesCreate))
+	mux.HandleFunc("GET /v1/batches/{id}", s.withKey(s.handleBatchesGet))
+	mux.HandleFunc("POST /v1/batches/{id}/cancel", s.withKey(s.handleBatchesCancel))
+	mux.HandleFunc("GET /v1/batches/{id}/content", s.withKey(s.handleBatchesContent))
+	// 内容审核与重排序
+	mux.HandleFunc("POST /v1/moderations", s.withKey(s.handleModerations))
+	mux.HandleFunc("POST /v1/rerank", s.withKey(s.handleRerank))
+	// 语音翻译与图片编辑（multipart 表单）
+	mux.HandleFunc("POST /v1/audio/translations", s.withKey(s.handleAudioTranslations))
+	mux.HandleFunc("POST /v1/images/edits", s.withKey(s.handleImageEdits))
+	mux.HandleFunc("POST /v1/images/variations", s.withKey(s.handleImageVariations))
+	// 文件管理（路由渠道由 ?model= 指定）
+	mux.HandleFunc("GET /v1/files", s.withKey(s.handleFilesList))
+	mux.HandleFunc("POST /v1/files", s.withKey(s.handleFilesCreate))
+	mux.HandleFunc("GET /v1/files/{id}", s.withKey(s.handleFilesGet))
+	mux.HandleFunc("DELETE /v1/files/{id}", s.withKey(s.handleFilesDelete))
+	mux.HandleFunc("GET /v1/files/{id}/content", s.withKey(s.handleFilesContent))
 
 	// ---------- 面板管理 ----------
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
@@ -82,6 +131,12 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/models", s.handleModelList)
 	mux.HandleFunc("POST /api/models", s.handleModelSave)
+	mux.HandleFunc("POST /api/models/preset", s.handleModelFromPreset)
+	mux.HandleFunc("POST /api/models/auto-aggregate", s.handleAutoAggregate)
+	mux.HandleFunc("POST /api/models/ai-create", s.handleModelAICreate)
+	mux.HandleFunc("POST /api/agent/chat", s.handleAgentChat)
+	mux.HandleFunc("GET /api/stats/upstreams", s.handleUpstreamStats)
+	mux.HandleFunc("POST /api/models/benchmark", s.handleModelBenchmark)
 	mux.HandleFunc("PUT /api/models/{id}", s.handleModelSave)
 	mux.HandleFunc("DELETE /api/models/{id}", s.handleModelDelete)
 
@@ -102,19 +157,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs", s.handleLogList)
 	mux.HandleFunc("DELETE /api/logs", s.handleLogClear)
 
+	mux.HandleFunc("GET /api/setup", s.handleSetupStatus)
+	mux.HandleFunc("POST /api/setup", s.handleSetupSave)
+
 	mux.HandleFunc("GET /api/settings", s.handleSettingsGet)
 	mux.HandleFunc("POST /api/settings", s.handleSettingsSave)
+
+	// ---------- 飞书深度整合：入站事件桥（公开端点，由 Encrypt Key / Token 保护） ----------
+	mux.HandleFunc("POST /webhook/feishu", s.handleFeishuWebhook)
+	mux.HandleFunc("POST /api/bridge/feishu/test", s.handleBridgeFeishuTest)
+	mux.HandleFunc("GET /api/bridge/feishu/status", s.handleBridgeFeishuStatus)
+
+	// ---------- 无人值守：自检、巡检历史、通知测试 ----------
+	mux.HandleFunc("GET /api/selfcheck", s.handleSelfCheck)
+	mux.HandleFunc("GET /api/health/history", s.handleHealthHistory)
+	mux.HandleFunc("POST /api/notify/test", s.handleNotifyTest)
 
 	mux.HandleFunc("POST /api/playground/chat", s.handlePlaygroundChat)
 	mux.HandleFunc("POST /api/playground/image", s.handlePlaygroundImage)
 	mux.HandleFunc("POST /api/playground/video", s.handlePlaygroundVideo)
+	mux.HandleFunc("POST /api/playground/speech", s.handlePlaygroundSpeech)
+	mux.HandleFunc("POST /api/playground/transcriptions", s.handlePlaygroundTranscription)
 
 	mux.HandleFunc("POST /api/connectors/generate", s.handleConnectorGenerate)
 	mux.HandleFunc("POST /api/connectors/try", s.handleConnectorTry)
 
 	// ---------- 前端静态资源 ----------
 	mux.Handle("/", s.staticHandler())
-	return logRequests(mux)
+	return gzipMiddleware(logRequests(mux))
 }
 
 // ---------- 中间件 ----------

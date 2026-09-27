@@ -437,3 +437,13 @@ func (a *TemplateAdapter) Image(ctx context.Context, up Upstream, m store.Model,
 func (a *TemplateAdapter) Embedding(ctx context.Context, up Upstream, m store.Model, in *EmbeddingInput) (*EmbeddingOutput, error) {
 	return nil, ErrUnsupported
 }
+
+// 语音请求涉及音频二进制与 multipart 上传，无法用 JSON 模板表达；
+// 接入非 OpenAI 协议的语音服务时，请在该渠道上改用 OpenAI 兼容端点。
+func (a *TemplateAdapter) Speech(context.Context, Upstream, store.Model, *SpeechInput) (*SpeechOutput, error) {
+	return nil, ErrUnsupported
+}
+
+func (a *TemplateAdapter) Transcription(context.Context, Upstream, store.Model, *TranscriptionInput) (*TranscriptionOutput, error) {
+	return nil, ErrUnsupported
+}

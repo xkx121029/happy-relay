@@ -21,20 +21,34 @@ func (u Upstream) client() *http.Client {
 
 // doJSON 发送一次 JSON 请求，非 2xx 时返回带响应体的 UpstreamError。
 func doJSON(ctx context.Context, up Upstream, method, url string, headers map[string]string, body any) (*http.Response, error) {
-	var reader io.Reader
+	var buf []byte
 	if body != nil {
-		buf, err := json.Marshal(body)
+		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		reader = bytes.NewReader(buf)
+		buf = b
+	}
+	contentType := ""
+	if body != nil {
+		contentType = "application/json"
+	}
+	return doRaw(ctx, up, method, url, contentType, headers, buf)
+}
+
+// doRaw 发送一次原始字节请求，用于 multipart/form-data 等非 JSON 场景。
+// contentType 为空时不显式设置，交由上游按默认处理。
+func doRaw(ctx context.Context, up Upstream, method, url, contentType string, headers map[string]string, body []byte) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(withContext(ctx), method, url, reader)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", "*/*")
 	for k, v := range up.Headers {
@@ -47,20 +61,26 @@ func doJSON(ctx context.Context, up Upstream, method, url string, headers map[st
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
-		detail := upstreamErrorMessage(string(raw))
-		if detail == "" {
-			detail = truncate(string(raw), 400)
-		}
-		return nil, &UpstreamError{
-			StatusCode: resp.StatusCode,
-			Body:       string(raw),
-			Message:    fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, detail),
-		}
+	return checkUpstreamResponse(resp)
+}
+
+// checkUpstreamResponse 把非 2xx 响应转成带可读信息的 UpstreamError；
+// 成功响应原样返回，其响应体由调用方负责关闭。
+func checkUpstreamResponse(resp *http.Response) (*http.Response, error) {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp, nil
 	}
-	return resp, nil
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	detail := upstreamErrorMessage(string(raw))
+	if detail == "" {
+		detail = truncate(string(raw), 400)
+	}
+	return nil, &UpstreamError{
+		StatusCode: resp.StatusCode,
+		Body:       string(raw),
+		Message:    fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, detail),
+	}
 }
 
 func decodeJSON(resp *http.Response, out any) error {

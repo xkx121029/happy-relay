@@ -37,12 +37,14 @@ func main() {
 	}
 	defer st.Close()
 
-	eng := relay.NewEngine(st, cfg.BreakerFails, cfg.BreakerCoolSec)
+	eng := relay.NewEngine(st, cfg.BreakerFails, cfg.BreakerCoolSec, cfg.TimeoutSec)
 	srv := api.New(cfg, st, eng, api.StaticFS())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	srv.StartBackground(ctx)
+	// 飞书长连接桥：按设置启动/保持 WebSocket 事件通道（配置变更时热同步）。
+	srv.FeishuSyncWSClient()
 
 	httpSrv := &http.Server{
 		Addr:    cfg.Addr,

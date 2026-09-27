@@ -533,6 +533,15 @@ func (a *GeminiAdapter) Image(ctx context.Context, up Upstream, m store.Model, i
 
 // ---------- 向量化 ----------
 
+// Gemini 的原生语音接口与 OpenAI 协议不通用，需要时请改用 OpenAI 兼容渠道。
+func (a *GeminiAdapter) Speech(context.Context, Upstream, store.Model, *SpeechInput) (*SpeechOutput, error) {
+	return nil, ErrUnsupported
+}
+
+func (a *GeminiAdapter) Transcription(context.Context, Upstream, store.Model, *TranscriptionInput) (*TranscriptionOutput, error) {
+	return nil, ErrUnsupported
+}
+
 func (a *GeminiAdapter) Embedding(ctx context.Context, up Upstream, m store.Model, in *EmbeddingInput) (*EmbeddingOutput, error) {
 	out := &EmbeddingOutput{}
 	// embedContent 一次只接受一条内容，多条输入按顺序循环调用。

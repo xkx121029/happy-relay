@@ -1,0 +1,507 @@
+/* ==========================================================================
+   移动端适配层
+   仅在窄屏（≤768px）生效，桌面端布局完全不受影响。
+   目标：接近原生 App 的观感——底部标签栏、安全区适配、触摸反馈与手势动效。
+   ========================================================================== */
+
+:root {
+  /* iOS 刘海与底部横条的安全区；非全面屏设备回退为 0 */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --tabbar-h: 56px;
+  --topbar-h: 52px;
+}
+
+/* ---------- 全局触摸体验（所有设备） ---------- */
+
+/* 去掉点击时系统绘制的灰色高亮块，改用自定义的按压反馈 */
+a,
+button,
+label,
+.btn,
+.nav-item,
+.tabbar-item,
+.more-item,
+.chip,
+.tab,
+.switch,
+tr {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 导航与操作区禁止长按选中，避免弹出系统的文本选择菜单 */
+.tabbar,
+.more-item,
+.nav-item,
+.tabs,
+.chip,
+.switch {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---------- 底部标签栏 ---------- */
+
+.tabbar {
+  display: none;
+}
+
+/* ---------- 「更多」面板 ---------- */
+
+.sheet-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(5, 6, 9, 0.55);
+  backdrop-filter: blur(3px);
+  overscroll-behavior: contain;
+}
+
+.sheet {
+  width: 100%;
+  max-height: 86dvh;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border-radius: 20px 20px 0 0;
+  padding: 10px 16px calc(16px + var(--safe-bottom));
+  border-top: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+}
+
+.sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  margin: 0 auto 12px;
+}
+
+.sheet-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.more-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.more-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 15px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.1s, background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.more-item .nav-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.more-item.active {
+  color: var(--brand-strong);
+  border-color: var(--brand);
+  background: var(--brand-dim);
+}
+
+.more-item:active {
+  transform: scale(0.95);
+}
+
+/* 面板的升起 / 落下动效 */
+.sheet-enter-active,
+.sheet-leave-active {
+  transition: opacity 0.2s ease;
+}
+.sheet-enter-from,
+.sheet-leave-to {
+  opacity: 0;
+}
+.sheet-enter-active .sheet,
+.sheet-leave-active .sheet {
+  transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.sheet-enter-from .sheet,
+.sheet-leave-to .sheet {
+  transform: translateY(100%);
+}
+
+/* ==========================================================================
+   窄屏布局
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  /* 兜底：任何意外的超宽元素都不要把整页撑出横向滚动 */
+  body {
+    overflow-x: hidden;
+  }
+
+  /* ---------- 侧边栏换成底部标签栏 ---------- */
+
+  .sidebar {
+    display: none;
+  }
+
+  .tabbar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    height: calc(var(--tabbar-h) + var(--safe-bottom));
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+  }
+
+  .tabbar-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 2px;
+    border: 0;
+    background: none;
+    color: var(--text-mute);
+    font-family: inherit;
+    font-size: 10.5px;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: color 0.15s, transform 0.1s;
+    touch-action: manipulation;
+  }
+
+  .tabbar-item .nav-icon {
+    width: 23px;
+    height: 23px;
+  }
+
+  .tabbar-item.active {
+    color: var(--brand-strong);
+  }
+
+  .tabbar-item:active {
+    transform: scale(0.92);
+  }
+
+  /* ---------- 顶栏与内容区 ---------- */
+
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    padding: calc(8px + var(--safe-top)) 14px 8px;
+    gap: 8px;
+  }
+
+  .topbar h1 {
+    font-size: 16px;
+  }
+
+  /* 描述文案在窄屏收益很低，隐藏后把空间留给标题与操作 */
+  .topbar .sub {
+    display: none;
+  }
+
+  .content {
+    padding: 14px 14px calc(var(--tabbar-h) + var(--safe-bottom) + 18px);
+  }
+
+  .page-head {
+    margin-bottom: 14px;
+    gap: 10px;
+  }
+
+  .page-head h2 {
+    font-size: 18px;
+  }
+
+  /* ---------- 触摸友好度 ---------- */
+
+  /* 小于 16px 的表单字号会让 iOS 在聚焦时自动放大整页 */
+  .input,
+  .select,
+  .textarea {
+    font-size: 16px;
+    padding: 10px 12px;
+  }
+
+  .btn {
+    min-height: 42px;
+    padding: 9px 15px;
+    touch-action: manipulation;
+    transition: transform 0.1s ease, background 0.12s, border-color 0.12s, opacity 0.12s;
+  }
+  .btn-sm {
+    min-height: 36px;
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .btn-block {
+    width: 100%;
+  }
+
+  /* 分栏里的按钮在窄屏改为等分铺满，更好点按 */
+  .page-head .row {
+    width: 100%;
+  }
+
+  /* ---------- 栅格一律单列 ---------- */
+
+  /* 部分页面用内联 grid-template-columns 做了左右分栏，需要 !important 才能覆盖 */
+  .grid[style*='grid-template-columns'] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .list-row {
+    flex-wrap: wrap;
+  }
+  .list-row .input {
+    flex: 1 1 100%;
+  }
+
+  .meta-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px 0;
+  }
+  .meta-list dt {
+    margin-top: 8px;
+  }
+
+  /* ---------- 表格：按内容展开，超宽时横向滑动 ---------- */
+
+  .table-wrap {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  table.table {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  table.table th,
+  table.table td {
+    padding: 9px 12px;
+  }
+
+  /* 限制单列宽度，避免某一列把表格撑得极宽 */
+  table.table td {
+    max-width: 52vw;
+  }
+
+  /* ---------- 弹窗改为底部抽屉 ---------- */
+
+  .modal-mask {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .modal {
+    max-width: 100%;
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    border-bottom: 0;
+    padding-bottom: var(--safe-bottom);
+    display: flex;
+    flex-direction: column;
+    animation: sheet-rise 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .modal-body {
+    max-height: none;
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 16px;
+  }
+
+  /* 抽屉顶部的抓手段，提示可以下滑收起 */
+  .modal-head {
+    position: relative;
+    padding: 20px 16px 12px;
+  }
+  .modal-head::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
+  }
+
+  .modal-foot {
+    padding: 12px 16px calc(12px + var(--safe-bottom));
+    flex: 0 0 auto;
+  }
+
+  /* ---------- 提示条避开底部标签栏 ---------- */
+
+  .toasts {
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 12px);
+  }
+  .toast {
+    min-width: 0;
+    max-width: none;
+  }
+
+  /* ---------- 调试台 ---------- */
+
+  /* 让聊天区撑满「屏幕高度 - 顶栏 - 标签栏 - 页面留白」 */
+  .chat-wrap {
+    height: calc(
+      100dvh - var(--safe-top) - var(--topbar-h) - var(--tabbar-h) - var(--safe-bottom) - 116px
+    );
+    min-height: 280px;
+  }
+
+  .chat-stream {
+    padding: 14px 12px;
+    gap: 12px;
+  }
+
+  /* 手机屏幕窄，隐藏头像把宽度让给正文 */
+  .msg .avatar {
+    display: none;
+  }
+
+  .msg {
+    max-width: 100%;
+    gap: 0;
+  }
+
+  /* 用户消息靠右，形成原生聊天观感 */
+  .msg.user {
+    justify-content: flex-end;
+  }
+
+  .msg.user .bubble {
+    max-width: 86%;
+  }
+
+  .msg.assistant .bubble {
+    max-width: 94%;
+  }
+
+  .msg .bubble {
+    border-radius: 14px;
+    padding: 10px 13px;
+    font-size: 14px;
+  }
+
+  .chat-input {
+    padding: 10px 12px;
+  }
+
+  .chat-input .textarea {
+    min-height: 46px;
+    max-height: 132px;
+  }
+
+  /* 目标模型名过长时截断，避免把发送按钮挤走 */
+  .chat-input .row .muted {
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---------- 结果媒体与标签栏 ---------- */
+
+  .media-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .tab {
+    flex: 0 0 auto;
+    touch-action: manipulation;
+  }
+
+  .chips {
+    gap: 7px;
+  }
+  .chip {
+    padding: 7px 13px;
+    font-size: 13px;
+    touch-action: manipulation;
+  }
+}
+
+/* 更窄的机型（iPhone SE 等）进一步收紧留白 */
+@media (max-width: 380px) {
+  .content {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .card {
+    padding: 14px 12px;
+  }
+  .stat {
+    padding: 13px 12px;
+  }
+  .more-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .more-item {
+    padding: 12px 4px;
+    font-size: 11.5px;
+  }
+}
+
+/* 横屏时底部标签栏会占掉宝贵的高度，缩窄一些 */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 480px) {
+  :root {
+    --tabbar-h: 48px;
+  }
+  .tabbar-item span:last-child {
+    display: none;
+  }
+}
+
+@keyframes sheet-rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}

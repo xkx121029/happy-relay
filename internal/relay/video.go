@@ -64,10 +64,16 @@ func (e *Engine) CreateVideo(ctx context.Context, m store.Model, ps []store.Prov
 	if m.Config.Video == nil {
 		return store.VideoTask{}, errors.New("该视频模型未配置提交任务模板，请在模型编辑里填写")
 	}
+	// 带首帧或参考图时要求上游支持图片输入。
+	need := []string{store.ModalityText}
+	if in.ImageURL != "" || in.FirstFrame != "" || len(in.Images) > 0 {
+		need = append(need, store.ModalityImage)
+	}
 	var lastErr error
-	for _, p := range e.orderForTry(m, ps) {
+	for _, t := range e.orderTargets(m, e.expandTargets(m, ps, need)) {
+		p := t.Provider
 		mu := m
-		mu.UpstreamName = m.UpstreamNameFor(p.ID)
+		mu.UpstreamName = t.UpstreamName
 		var providerErr error
 		for _, up := range e.candidates(p) {
 			vars := videoVars(up, mu, in, "")
@@ -170,18 +176,25 @@ func (e *Engine) PollVideo(ctx context.Context, t store.VideoTask) (store.VideoT
 		if status == "" {
 			status = t.Status
 		}
-		t.Status = status
 		t.Progress = jsonPathInt(raw, spec.Response.Progress)
 		if t.Progress > 100 {
 			t.Progress = 100
 		}
 		if url := jsonPathString(raw, spec.Response.VideoURL); url != "" {
 			result["video_url"] = url
+			// 部分上游（如智谱的异步结果）不返回状态字段，
+			// 此时以「是否已产出视频地址」作为完成依据。
+			if status == store.TaskQueued || status == store.TaskRunning {
+				status = store.TaskSucceeded
+			}
 		}
-		t.Result = mustJSON(result)
 		if status == store.TaskSucceeded && t.Progress < 100 {
 			t.Progress = 100
 		}
+		// 状态必须在所有判定完成后再落库，否则会出现
+		// 「状态 running 但已有 video_url」这种前后矛盾的结果。
+		t.Status = status
+		t.Result = mustJSON(result)
 		if err := e.st.UpdateVideoTask(t); err != nil {
 			return t, err
 		}

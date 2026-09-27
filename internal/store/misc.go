@@ -289,6 +289,7 @@ type UsageLog struct {
 	LatencyMS        int64  `json:"latency_ms"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
+	Cost             float64 `json:"cost"`
 	Error            string `json:"error"`
 	RequestBody      string `json:"request_body,omitempty"`
 	ResponsePreview  string `json:"response_preview,omitempty"`
@@ -300,21 +301,27 @@ func (s *Store) AddUsageLog(l UsageLog) {
 	}
 	_, _ = s.db.Exec(`INSERT INTO usage_logs
 		(created_at,capability,model,provider_name,api_key_name,status,stream,latency_ms,
-		 prompt_tokens,completion_tokens,error,request_body,response_preview)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 prompt_tokens,completion_tokens,cost,error,request_body,response_preview)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.CreatedAt, l.Capability, l.Model, l.ProviderName, l.APIKeyName, l.Status,
-		boolInt(l.Stream), l.LatencyMS, l.PromptTokens, l.CompletionTokens, l.Error,
+		boolInt(l.Stream), l.LatencyMS, l.PromptTokens, l.CompletionTokens, l.Cost, l.Error,
 		l.RequestBody, l.ResponsePreview)
 }
 
-func (s *Store) ListUsageLogs(limit int, capability, keyword string) ([]UsageLog, error) {
+// ListUsageLogs 按时间倒序返回调用日志。beforeID>0 时只取 id 小于它的更早记录，
+// 配合前端「加载更多」做游标分页，避免一次性拉全表。
+func (s *Store) ListUsageLogs(limit int, beforeID int64, capability, keyword string) ([]UsageLog, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	q := `SELECT id,created_at,capability,model,provider_name,api_key_name,status,stream,
-		latency_ms,prompt_tokens,completion_tokens,error,request_body,response_preview
+		latency_ms,prompt_tokens,completion_tokens,cost,error,request_body,response_preview
 		FROM usage_logs WHERE 1=1`
 	args := []any{}
+	if beforeID > 0 {
+		q += ` AND id < ?`
+		args = append(args, beforeID)
+	}
 	if capability != "" {
 		q += ` AND capability=?`
 		args = append(args, capability)
@@ -337,7 +344,7 @@ func (s *Store) ListUsageLogs(limit int, capability, keyword string) ([]UsageLog
 		var stream int
 		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.Capability, &l.Model, &l.ProviderName,
 			&l.APIKeyName, &l.Status, &stream, &l.LatencyMS, &l.PromptTokens,
-			&l.CompletionTokens, &l.Error, &l.RequestBody, &l.ResponsePreview); err != nil {
+			&l.CompletionTokens, &l.Cost, &l.Error, &l.RequestBody, &l.ResponsePreview); err != nil {
 			return nil, err
 		}
 		l.Stream = stream == 1
@@ -358,6 +365,16 @@ func (s *Store) TrimUsageLogs(keep int) {
 	}
 	_, _ = s.db.Exec(`DELETE FROM usage_logs WHERE id NOT IN
 		(SELECT id FROM usage_logs ORDER BY id DESC LIMIT ?)`, keep)
+}
+
+// TrimUsageLogsBefore 删除指定时刻之前的调用日志。
+// created_at 是 RFC3339 文本且由同一台服务器写入（时区偏移一致），
+// 字符串比较即时间比较；cutoff 传空串时不做任何事。
+func (s *Store) TrimUsageLogsBefore(cutoff string) {
+	if cutoff == "" {
+		return
+	}
+	_, _ = s.db.Exec(`DELETE FROM usage_logs WHERE created_at < ?`, cutoff)
 }
 
 // Stats 汇总面板概览数据。

@@ -188,7 +188,7 @@ function capBadge(capability: string) {
       <span class="muted" style="font-size: 12.5px">共 {{ list.length }} 个可用模型</span>
     </div>
 
-    <div v-if="loading" class="card"><div class="skeleton" style="width: 40%" /></div>
+    <div v-if="loading" class="card"><div class="skeleton" style="height: 160px" /></div>
 
     <div v-else-if="list.length" style="display: flex; flex-direction: column; gap: 16px">
       <div v-for="group in grouped" :key="group.providerID" class="card" style="padding: 0">
@@ -205,7 +205,7 @@ function capBadge(capability: string) {
                 <th>能力</th>
                 <th>上下文</th>
                 <th>来源</th>
-                <th>被引用</th>
+                <th class="num">被引用</th>
                 <th>状态</th>
                 <th style="text-align: right">操作</th>
               </tr>
@@ -214,7 +214,7 @@ function capBadge(capability: string) {
               <tr v-for="item in group.items" :key="item.id">
                 <td>
                   <div class="mono">{{ item.model_id }}</div>
-                  <div v-if="item.remark" class="muted" style="font-size: 12px">{{ item.remark }}</div>
+                  <div v-if="item.remark" class="muted" style="font-size: 11.5px">{{ item.remark }}</div>
                 </td>
                 <td><span class="badge" :class="capBadge(item.capability)">{{ capLabel(item.capability) }}</span></td>
                 <td class="dim mono">{{ item.context_length ? fmtK(item.context_length) : '—' }}</td>
@@ -223,14 +223,14 @@ function capBadge(capability: string) {
                     {{ item.source === 'probe' ? '探测' : '手工' }}
                   </span>
                 </td>
-                <td class="dim">{{ item.used_by ? item.used_by + ' 个模型' : '未引用' }}</td>
+                <td class="num dim">{{ item.used_by ? item.used_by + ' 个' : '—' }}</td>
                 <td>
                   <span class="badge" :class="item.enabled ? 'ok' : ''">
                     <span class="dot" />{{ item.enabled ? '可用' : '停用' }}
                   </span>
                 </td>
                 <td>
-                  <div class="row" style="justify-content: flex-end; gap: 6px">
+                  <div class="row" style="justify-content: flex-end; gap: 4px">
                     <button class="btn btn-sm btn-ghost" @click="openEdit(item)">编辑</button>
                     <button class="btn btn-sm btn-ghost" style="color: var(--danger)" @click="remove(item)">
                       移除
@@ -245,14 +245,22 @@ function capBadge(capability: string) {
     </div>
 
     <div v-else class="card empty">
+      <div class="empty-icon">▦</div>
       <div class="big">模型库还是空的</div>
       <div>到「渠道」里点「获取模型」，把探测到的模型加入模型库。</div>
+      <div class="empty-cta">
+        <RouterLink class="btn btn-sm" to="/providers">去渠道探测</RouterLink>
+        <button class="btn btn-sm btn-ghost" @click="openCreate">手动登记</button>
+      </div>
     </div>
 
     <Modal
       v-if="editing"
       :title="form.id ? '编辑模型库条目' : '登记上游模型'"
       subtitle="模型库只是候选清单，不会直接对外提供服务。"
+      submit-on-enter
+      :busy="saving"
+      @submit="save"
       @close="editing = false"
     >
       <div class="field">
