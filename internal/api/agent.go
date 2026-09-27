@@ -331,7 +331,7 @@ func (s *Server) agentExec(action string, params map[string]any) agentStep {
 		if id <= 0 {
 			return fail("缺少模型 id")
 		}
-		if !paramsBool(params, "confirm") {
+		if !s.confirmOK(params) {
 			return fail("删除模型「id=%d」是不可逆操作，已拒绝执行——请先向用户说明并征得同意后，携带 confirm:true 重试", id)
 		}
 		if err := s.st.DeleteModel(id); err != nil {
@@ -434,7 +434,7 @@ func (s *Server) agentExec(action string, params map[string]any) agentStep {
 		if id <= 0 {
 			return fail("缺少秘钥 id")
 		}
-		if !paramsBool(params, "confirm") {
+		if !s.confirmOK(params) {
 			return fail("删除秘钥是不可逆操作，已拒绝执行——请先向用户说明并征得同意后，携带 confirm:true 重试")
 		}
 		if err := s.st.DeleteAPIKey(id); err != nil {
@@ -470,7 +470,7 @@ func (s *Server) agentExec(action string, params map[string]any) agentStep {
 		if id <= 0 {
 			return fail("缺少技能 id")
 		}
-		if !paramsBool(params, "confirm") {
+		if !s.confirmOK(params) {
 			return fail("删除技能是不可逆操作，已拒绝执行——请先向用户说明并征得同意后，携带 confirm:true 重试")
 		}
 		if err := s.st.DeleteSkill(id); err != nil {
@@ -526,7 +526,7 @@ func (s *Server) agentExec(action string, params map[string]any) agentStep {
 		step.Summary = fmt.Sprintf("共 %d 条画像：%s", len(list), truncateStr(string(b), 2000))
 
 	case "clear_logs":
-		if !paramsBool(params, "confirm") {
+		if !s.confirmOK(params) {
 			return fail("清空调用日志是不可逆操作，已拒绝执行——请先向用户说明并征得同意后，携带 confirm:true 重试")
 		}
 		if err := s.st.ClearUsageLogs(); err != nil {
