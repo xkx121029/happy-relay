@@ -51,9 +51,9 @@ func TestSeedBuiltinPresets(t *testing.T) {
 		t.Fatalf("列出模型失败：%v", err)
 	}
 
-	// 10 个永久免费平台：智谱 / 硅基流动 / 魔搭 / 千帆 / 讯飞 / OpenRouter /
-	// NVIDIA NIM / Groq / 腾讯混元 / GitHub Models。
-	const wantProviders = 10
+	// 9 个永久免费平台：智谱 / 硅基流动 / 魔搭 / 千帆 / 讯飞 / OpenRouter /
+	// NVIDIA NIM / Groq / 腾讯混元。
+	const wantProviders = 9
 	if len(providers) != wantProviders {
 		t.Fatalf("内置渠道数量不符：got %d，期望 %d", len(providers), wantProviders)
 	}
@@ -61,23 +61,11 @@ func TestSeedBuiltinPresets(t *testing.T) {
 		t.Fatalf("播种不应创建模型（应由配置向导在测试通过后创建），实际 %d 个", len(models))
 	}
 
-	// 校验 GitHub Models 渠道：无 /v1 前缀标记必须为真，且入口地址不带 /v1。
-	var gh Provider
-	found := false
+	// GitHub Models 已从预设中移除：不应再播种出该渠道。
 	for _, p := range providers {
 		if p.Name == "GitHub Models" {
-			gh = p
-			found = true
+			t.Errorf("GitHub Models 已下架，不应再出现在内置渠道里")
 		}
-	}
-	if !found {
-		t.Fatal("未播种出 GitHub Models 渠道")
-	}
-	if !gh.NoVersionPath {
-		t.Error("GitHub Models 渠道的 no_version_path 应为 true")
-	}
-	if len(gh.BaseURLs) != 1 || gh.BaseURLs[0] != "https://models.inference.ai.azure.com" {
-		t.Errorf("GitHub Models 入口地址应为根路径（无 /v1），实际：%v", gh.BaseURLs)
 	}
 
 	// 校验版本号已写入。
