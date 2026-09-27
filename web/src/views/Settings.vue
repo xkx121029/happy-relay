@@ -348,6 +348,7 @@ async function load() {
 }
 
 onMounted(load)
+onMounted(loadFeishuStatus)
 
 // Ctrl/Cmd+S 直接保存：设置页字段多，用键盘保存比挪鼠标去点按钮顺手。
 // 仅在本页挂载期间监听，离开页面即解除，不影响其它页面。
@@ -531,6 +532,89 @@ async function testBridge() {
     bridgeTesting.value = false
   }
 }
+// ---- 飞书配置向导：实时链路状态（GET /api/bridge/feishu/status，读的是已保存配置）----
+const feishuStatus = ref<any>(null)
+const feishuStatusLoading = ref(false)
+
+async function loadFeishuStatus() {
+  feishuStatusLoading.value = true
+  try {
+    feishuStatus.value = await api.bridgeFeishuStatus()
+  } catch {
+    feishuStatus.value = null
+  } finally {
+    feishuStatusLoading.value = false
+  }
+}
+
+// gotoField 平滑滚动到指定字段并短暂高亮。
+function gotoField(id: string) {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el.classList.remove('flash-target')
+  // 强制重排后再加类，保证连续点击同一目标也能重新闪一下。
+  void el.offsetWidth
+  el.classList.add('flash-target')
+  setTimeout(() => el.classList.remove('flash-target'), 1600)
+}
+
+// feishuSteps 把链路状态翻译成向导步骤；done 由服务端实时状态判定，不是表单里的值。
+const feishuSteps = computed(() => {
+  const st = feishuStatus.value
+  if (!st) return []
+  const steps: { title: string; desc: string; done: boolean; optional?: boolean; target?: string }[] = [
+    {
+      title: '启用整合',
+      desc: st.enabled ? '整合已开启' : '打开「启用飞书整合」开关',
+      done: !!st.enabled,
+      target: 'f-feishu-enable',
+    },
+    {
+      title: '应用凭据',
+      desc: st.credentials_ok
+        ? 'App ID / Secret 有效，可换取应用身份'
+        : '填入 App ID 与 App Secret（需先保存，可点下方「校验应用凭据」）',
+      done: !!st.credentials_ok,
+      target: 'f-feishu-app',
+    },
+    {
+      title: '事件接入',
+      desc:
+        st.transport === 'ws'
+          ? st.ws_connected
+            ? '长连接已建立，实时接收飞书消息'
+            : '长连接未建立：保存配置并保持服务运行，稍后自动重连'
+          : '回调 URL 模式：需公网可达并已在飞书开放平台配置',
+      done: st.transport === 'ws' ? !!st.ws_connected : !!st.credentials_ok,
+      target: 'f-feishu-transport',
+    },
+    {
+      title: '回复通道',
+      desc:
+        st.mode === 'agent'
+          ? st.agent_ready
+            ? 'Agent 模式就绪：主模型可指挥面板查配置 / 建模型 / 改设置'
+            : 'Agent 模式需先在「通用」里选择系统级 AI 模型'
+          : st.chat_ready
+            ? 'Chat 模式就绪：回环链路已配置'
+            : 'Chat 模式需选择回复模型，或站点存在至少一把启用中的秘钥',
+      done: st.mode === 'agent' ? !!st.agent_ready : !!st.chat_ready,
+      target: 'f-feishu-mode',
+    },
+    {
+      title: '告警 / 日报推送（可选）',
+      desc: st.notify_chat_id
+        ? `告警与周报卡片直推会话 ${String(st.notify_chat_id).slice(0, 14)}…`
+        : '填「飞书应用推送目标 chat_id」后，异常告警与每周状态卡片会直推到你的飞书',
+      done: !!st.notify_chat_id,
+      optional: true,
+      target: 'f-feishu-notify',
+    },
+  ]
+  return steps
+})
+
 async function testNotify() {
   if (dirty.value) {
     toast('请先保存设置，测试会使用已保存的配置', 'error')
