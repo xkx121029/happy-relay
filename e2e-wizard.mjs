@@ -13,6 +13,8 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 
 try {
   await page.goto('http://127.0.0.1:8799/#/settings', { waitUntil: 'domcontentloaded' })
+  // 飞书整合在「通知与告警」分节，先切过去
+  await page.locator('.rail-item', { hasText: '通知与告警' }).click()
   await page.waitForSelector('.feishu-wizard', { timeout: 15000 })
   check('向导卡片渲染', true)
 
