@@ -19,7 +19,7 @@ import (
 // 继续，最多 8 轮），最后返回给用户的既有最终答复也有每一步执行轨迹。
 // 不可逆操作（删除/清空）要求 AI 先征得用户确认（params.confirm=true），双层保险。
 
-const agentSystemPrompt = `你是「模型中转站」的站内管理智能体，拥有与面板用户相同的管理权限：
+const agentSystemPromptBase = `你是「模型中转站」的站内管理智能体，拥有与面板用户相同的管理权限：
 查询与创建/修改/删除模型、渠道、秘钥、技能，读取与修改任意设置项，查看日志与上游画像，执行多模态自动聚合。
 
 工作方式：你每轮只能输出一个 JSON 对象（不要 markdown 围栏、不要多余文字）：
@@ -46,11 +46,29 @@ const agentSystemPrompt = `你是「模型中转站」的站内管理智能体�
 - list_logs                      {limit(默认50)}             最近调用日志
 - upstream_stats                 {}                          上游健康画像
 - clear_logs                     {confirm}                   清空调用日志（需 confirm）
+- list_tasks                     {limit(默认20)}             最近视频任务（状态/模型/耗时）
+- delete_task                    {task_id,confirm}           删除视频任务记录（不可逆，需 confirm）
+- test_provider                  {id}                        探测渠道连通性（逐入口轻量请求，返回状态与模型列表）
+- reset_provider                 {id(0=全部)}                复位渠道熔断状态（误熔断后立即恢复用）
+- list_health                    {provider_id(可选),limit}    最近健康巡检记录
+- self_check                     {}                          配置自省（发现的问题与修复建议）
+- test_notify                    {}                          发送测试通知验证告警通道
+- feishu_status                  {}                          飞书整合链路状态（凭据/长连接/回复通道）
+- export_backup                  {}                          导出全量配置备份到数据目录，返回文件路径
 
 原则：先查再改（改之前用 list/ get 确认现状）；改动尽量小；一次任务里的多个工具按依赖顺序调用；
 能用 settings 字段一次完成的设置变更，优先在最终 reply 里用 settings 字段声明，不必再调 save_settings 工具；
-删除与清空必须先征得用户同意；对「整合所有模型」类需求用 save_model 建聚合模型。
+删除与清空默认要先征得用户同意（见下方权限模式说明）；对「整合所有模型」类需求用 save_model 建聚合模型。
 所有面向用户的文字都用中文。`
+
+// agentSystemPrompt 组装系统提示词：fullAccess 开启时放宽 confirm 协议。
+func agentSystemPrompt(fullAccess bool) string {
+	if !fullAccess {
+		return agentSystemPromptBase
+	}
+	return agentSystemPromptBase + "\n【当前权限模式：最大权限】删除、清空、复位等不可逆操作无需先征得用户确认，" +
+		"直接携带 confirm:true 执行即可，但执行前的 think/reply 里必须用一句话说明将要删除什么、后果是什么。"
+}
 
 const agentMaxRounds = 8
 
@@ -114,7 +132,7 @@ func (s *Server) handleAgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	history := make([]relay.ChatMessage, 0, len(req.Messages)+2)
-	history = append(history, relay.ChatMessage{Role: "system", Content: agentSystemPrompt})
+	history = append(history, relay.ChatMessage{Role: "system", Content: agentSystemPrompt(s.agentFullAccess())})
 	for _, msg := range req.Messages {
 		role := msg.Role
 		if role != "user" && role != "assistant" {
@@ -258,6 +276,16 @@ func paramsInt(params map[string]any, key string) int64 {
 func paramsBool(params map[string]any, key string) bool {
 	v, _ := params[key].(bool)
 	return v
+}
+
+// agentFullAccess 是否开启「最大权限」：删除/清空类操作免 confirm 直接执行。
+func (s *Server) agentFullAccess() bool {
+	return s.st.GetSetting(SettingAgentFullAccess, "off") == "on"
+}
+
+// confirmOK 判定不可逆操作是否放行：显式 confirm=true，或已开启最大权限。
+func (s *Server) confirmOK(params map[string]any) bool {
+	return paramsBool(params, "confirm") || s.agentFullAccess()
 }
 
 // agentExec 工具分发与执行。与面板 handler 走同一套 store 方法 = 与用户相同权限。
