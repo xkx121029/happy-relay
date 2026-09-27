@@ -324,7 +324,7 @@ func (s *Server) feishuGenerateReply(text, chatID, chatType string) string {
 			return "系统级 AI 不可用：" + err.Error()
 		}
 		history := make([]relay.ChatMessage, 0, len(hist)+2)
-		history = append(history, relay.ChatMessage{Role: "system", Content: agentSystemPrompt})
+		history = append(history, relay.ChatMessage{Role: "system", Content: agentSystemPrompt(s.agentFullAccess())})
 		history = append(history, hist...)
 		history = append(history, relay.ChatMessage{Role: "user", Content: text + ctxNote})
 		resp, loopErr := s.agentCore(context.Background(), systemModel, m, ps, history, nil)

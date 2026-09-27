@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -533,6 +535,154 @@ func (s *Server) agentExec(action string, params map[string]any) agentStep {
 			return fail("清空失败：%v", err)
 		}
 		step.Summary = "已清空全部调用日志"
+
+	// ---------- 最大权限扩展工具：任务 / 渠道探测 / 巡检 / 自省 / 通知 / 飞书 / 备份 ----------
+
+	case "list_tasks":
+		limit := paramsInt(params, "limit")
+		if limit <= 0 {
+			limit = 20
+		}
+		list, err := s.st.ListVideoTasks(int(limit))
+		if err != nil {
+			return fail("读取任务失败：%v", err)
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, t := range list {
+			out = append(out, s.taskResponse(t))
+		}
+		b, _ := json.Marshal(out)
+		step.Detail = string(b)
+		step.Summary = fmt.Sprintf("最近 %d 个视频任务：%s", len(list), truncateStr(string(b), 2000))
+
+	case "delete_task":
+		tid := strings.TrimSpace(fmt.Sprint(params["task_id"]))
+		if tid == "" || tid == "<nil>" {
+			return fail("缺少任务 task_id（可先用 list_tasks 查询）")
+		}
+		task, err := s.st.GetVideoTaskByTaskID(tid)
+		if err != nil {
+			return fail("任务不存在：%s", tid)
+		}
+		if !s.confirmOK(params) {
+			return fail("删除任务「%s」是不可逆操作，已拒绝执行——请先向用户说明并征得同意后，携带 confirm:true 重试", tid)
+		}
+		if err := s.st.DeleteVideoTask(task.ID); err != nil {
+			return fail("删除失败：%v", err)
+		}
+		step.Summary = fmt.Sprintf("已删除视频任务「%s」", tid)
+
+	case "test_provider":
+		id := paramsInt(params, "id")
+		if id <= 0 {
+			return fail("缺少渠道 id（可先用 list_providers 查询）")
+		}
+		p, err := s.st.GetProvider(id)
+		if err != nil {
+			return fail("渠道不存在：#%d", id)
+		}
+		urls := p.BaseURLs
+		if len(urls) == 0 {
+			if def := relay.DefaultBaseURL(p.Kind); def != "" {
+				urls = []string{def}
+			}
+		}
+		if len(urls) == 0 {
+			return fail("渠道「%s」没有可探测的入口地址", p.Name)
+		}
+		key := ""
+		if len(p.APIKeys) > 0 {
+			key = p.APIKeys[0]
+		}
+		pctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		results := make([]probeResult, 0, len(urls))
+		for _, raw := range urls {
+			results = append(results, probeUpstream(pctx, probeClient, p.Kind, raw, key, p.NoVersionPath))
+		}
+		b, _ := json.Marshal(results)
+		step.Detail = string(b)
+		okN := 0
+		for _, r := range results {
+			if r.OK {
+				okN++
+			}
+		}
+		step.Summary = fmt.Sprintf("渠道「%s」探测完成：%d/%d 个入口连通", p.Name, okN, len(results))
+
+	case "reset_provider":
+		id := paramsInt(params, "id")
+		if id < 0 {
+			return fail("参数不合法：id 应为渠道 id（0 表示全部）")
+		}
+		s.eng.ResetHealth(id)
+		if id == 0 {
+			step.Summary = "已复位全部渠道熔断状态"
+		} else {
+			step.Summary = fmt.Sprintf("已复位渠道 #%d 熔断状态", id)
+		}
+
+	case "list_health":
+		id := paramsInt(params, "provider_id")
+		limit := paramsInt(params, "limit")
+		if limit <= 0 {
+			limit = 30
+		}
+		checks, err := s.st.RecentHealthChecks(id, int(limit))
+		if err != nil {
+			return fail("读取巡检记录失败：%v", err)
+		}
+		b, _ := json.Marshal(checks)
+		step.Detail = string(b)
+		step.Summary = fmt.Sprintf("最近 %d 条巡检记录：%s", len(checks), truncateStr(string(b), 2000))
+
+	case "self_check":
+		res := s.RunSelfCheck()
+		b, _ := json.Marshal(res)
+		step.Detail = string(b)
+		step.Summary = fmt.Sprintf("自检完成：%d 个问题、%d 个提醒（共 %d 项检查）", res.Error, res.Warn, res.OK+res.Warn+res.Error)
+
+	case "test_notify":
+		ok, channels, err := s.SendTestNotification(context.Background())
+		if err != nil {
+			return fail("发送测试通知失败：%v", err)
+		}
+		if ok == 0 {
+			return fail("所有通道都推送失败（%s），请检查告警配置，详情见服务端日志", strings.Join(channels, "、"))
+		}
+		step.Summary = fmt.Sprintf("测试通知已发送到 %d 个通道（%s）", ok, strings.Join(channels, "、"))
+
+	case "feishu_status":
+		wsConnected, wsErr := s.feishuWSStatus()
+		st := map[string]any{
+			"enabled":        s.st.GetSetting(SettingBridgeEnabled, "") == "on",
+			"transport":      s.st.GetSetting(SettingBridgeTransport, SettingBridgeTransportWS),
+			"credentials_ok": strings.TrimSpace(s.st.GetSetting(SettingBridgeAppID, "")) != "" && s.st.GetSetting(SettingBridgeAppSecret, "") != "",
+			"ws_connected":   wsConnected,
+			"ws_last_error":  wsErr,
+			"mode":           s.st.GetSetting(SettingBridgeMode, "chat"),
+			"agent_ready":    s.st.GetSetting(SettingSystemModel, "") != "",
+			"chat_ready":     s.st.GetSetting(SettingBridgeModel, "") != "",
+			"notify_chat_id": strings.TrimSpace(s.st.GetSetting(SettingNotifyFeishuChatID, "")),
+			"alert_enabled":  s.st.GetSetting(SettingAlertEnabled, "") == "on",
+			"report_enabled": s.st.GetSetting(SettingReportEnabled, "") == "on",
+		}
+		b, _ := json.Marshal(st)
+		step.Detail = string(b)
+		step.Summary = fmt.Sprintf("飞书整合：启用=%v 接入=%s 长连接=%v 模式=%s", st["enabled"], st["transport"], wsConnected, st["mode"])
+
+	case "export_backup":
+		backup, err := s.st.ExportAll()
+		if err != nil {
+			return fail("导出失败：%v", err)
+		}
+		b, _ := json.MarshalIndent(backup, "", "  ")
+		name := "backup-agent-" + time.Now().Format("20060102-150405") + ".json"
+		path := filepath.Join(s.cfg.DataDir, name)
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			return fail("写入备份文件失败：%v", err)
+		}
+		step.Summary = fmt.Sprintf("已导出全量配置备份到数据目录：%s（%d 字节）", name, len(b))
 
 	default:
 		return fail("未知工具：%s", action)
