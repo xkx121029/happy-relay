@@ -1204,7 +1204,7 @@ const checkSummary = computed(() => {
             />
             <div class="hint">粘贴群机器人 Webhook；代码按域名自动选择消息格式。</div>
           </div>
-          <div class="field">
+          <div class="field" id="f-feishu-notify">
             <label>飞书应用推送目标 chat_id（可选）</label>
             <input
               v-model="form.notify_feishu_chat_id"
@@ -1235,7 +1235,39 @@ const checkSummary = computed(() => {
             让飞书消息直达中继：私聊机器人、或在群里 @机器人 说话，它会回复你。
             回复可「回环」走本站对外模型（路由/熔断/日志全记账），也可直接调用站内 Agent（主模型）指挥面板改配置。
           </p>
-          <div class="field">
+          <!-- 配置向导：缺哪一步一目了然，直接跳转 -->
+          <div class="feishu-wizard" v-if="feishuStatus">
+            <div class="fw-head">
+              <span class="fw-title">配置向导</span>
+              <span class="muted" style="font-size: 12px">链路状态实时来自服务端（已保存的配置）</span>
+              <div class="spacer" />
+              <button class="btn btn-ghost btn-sm" :disabled="feishuStatusLoading" @click="loadFeishuStatus">
+                <span v-if="feishuStatusLoading" class="spinner" />刷新
+              </button>
+            </div>
+            <div class="fw-steps">
+              <div
+                v-for="s in feishuSteps"
+                :key="s.title"
+                class="fw-step"
+                :class="{ done: s.done, warn: !s.done && !s.optional, optional: !s.done && s.optional }"
+              >
+                <span class="fw-dot">{{ s.done ? '✓' : s.optional ? '!' : '✕' }}</span>
+                <div class="fw-body">
+                  <div class="fw-name">{{ s.title }}</div>
+                  <div class="fw-desc">{{ s.desc }}</div>
+                </div>
+                <a v-if="!s.done && s.target" class="fw-jump" @click.prevent="gotoField(s.target!)">去配置 →</a>
+              </div>
+            </div>
+            <div
+              v-if="feishuStatus.transport === 'ws' && !feishuStatus.ws_connected && feishuStatus.ws_last_error"
+              class="fw-err"
+            >
+              长连接最近一次错误：{{ feishuStatus.ws_last_error }}
+            </div>
+          </div>
+          <div class="field" id="f-feishu-enable">
             <label>启用飞书整合</label>
             <label class="switch">
               <input v-model="form.bridge_feishu_enabled" type="checkbox" />
@@ -1248,7 +1280,7 @@ const checkSummary = computed(() => {
               推荐用「长连接」接收事件：无需公网 IP/域名、无需加解密配置，保存后自动建连。
             </div>
           </div>
-          <div class="field">
+          <div class="field" id="f-feishu-transport">
             <label>事件接入方式</label>
             <select v-model="form.bridge_feishu_transport" class="select" :disabled="!form.bridge_feishu_enabled">
               <option value="ws">长连接（推荐，无需公网）</option>
