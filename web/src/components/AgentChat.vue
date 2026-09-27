@@ -140,6 +140,105 @@ function stepName(s: AgentStep): string {
   return actionLabel[s.action] || s.action
 }
 
+// ---------- 工具结果富 UI：列表/设置类工具直接渲染成卡片，而不是裸 JSON ----------
+interface ToolCell {
+  t: string
+  cls?: string // ok=启用绿 off=停用灰 cap=类型徽标
+}
+interface ToolView {
+  cols: string[]
+  rows: ToolCell[][]
+  more: number // 未展示的剩余条数
+}
+const TOOL_MAX_ROWS = 12
+const toolViewCache = new WeakMap<object, ToolView | null>()
+
+// tt 取步骤对应富视图（WeakMap 缓存，避免流式重渲时反复 JSON.parse）。
+function tt(s: AgentStep): ToolView | null {
+  if (toolViewCache.has(s)) return toolViewCache.get(s) as ToolView | null
+  const v = buildToolView(s)
+  toolViewCache.set(s, v)
+  return v
+}
+
+function jarr(s: AgentStep): any[] | null {
+  if (!s.detail) return null
+  try {
+    const d = JSON.parse(s.detail)
+    return Array.isArray(d) ? d : null
+  } catch {
+    return null
+  }
+}
+function c(t: any, cls?: string): ToolCell {
+  return { t: String(t ?? ''), cls }
+}
+const capLabel = (v: any) =>
+  ({ chat: '对话', image: '绘图', video: '视频', embedding: '向量', speech: '语音', transcribe: '转写' }[String(v)] || String(v || '—'))
+const statusCell = (on: any) => c(on ? '启用' : '停用', on ? 'ok' : 'off')
+const trunc = (v: any, n: number) => {
+  const t = String(v ?? '')
+  return t.length > n ? t.slice(0, n) + '…' : t
+}
+const SENSITIVE = /(secret|pass|token|key|cipher)/i
+
+function buildToolView(s: AgentStep): ToolView | null {
+  const arr = jarr(s)
+  let cols: string[]
+  let rows: ToolCell[][]
+  switch (s.action) {
+    case 'list_models':
+      if (!arr) return null
+      cols = ['模型', '类型', '上游', '状态']
+      rows = arr.map((m) => [
+        c(m.name, 'name'),
+        c(capLabel(m.capability), 'cap'),
+        c((m.inputs?.length ?? 0) + ' 个'),
+        statusCell(m.enabled),
+      ])
+      break
+    case 'list_providers':
+      if (!arr) return null
+      cols = ['渠道', '平台', '密钥数', '状态']
+      rows = arr.map((p) => [c(p.name, 'name'), c(p.kind, 'cap'), c(p.api_key_count ?? 0), statusCell(p.enabled)])
+      break
+    case 'list_keys':
+      if (!arr) return null
+      cols = ['秘钥', '可用模型', '状态']
+      rows = arr.map((k) => [
+        c(k.name, 'name'),
+        c(Array.isArray(k.models) && k.models.length ? trunc(k.models.join('、'), 36) : '全部模型'),
+        statusCell(k.enabled),
+      ])
+      break
+    case 'list_skills':
+      if (!arr) return null
+      cols = ['技能', '类型', '说明', '状态']
+      rows = arr.map((k) => [c(k.name, 'name'), c(capLabel(k.capability), 'cap'), c(trunc(k.description, 40)), statusCell(k.enabled)])
+      break
+    case 'get_settings': {
+      if (!s.detail) return null
+      let obj: Record<string, string> | null = null
+      try {
+        obj = JSON.parse(s.detail)
+      } catch {}
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+      cols = ['配置项', '值']
+      rows = Object.keys(obj)
+        .sort()
+        .map((k) => [
+          c(k, 'name'),
+          SENSITIVE.test(k) && obj[k] ? c('••••••（已配置）', 'off') : c(trunc(obj[k], 60) || '—'),
+        ])
+      break
+    }
+    default:
+      return null
+  }
+  const more = Math.max(0, rows.length - TOOL_MAX_ROWS)
+  return { cols, rows: rows.slice(0, TOOL_MAX_ROWS), more }
+}
+
 // 该消息是否正处于「流式执行中」：是最后一条 + busy + 尚无最终回复
 function isLive(i: number): boolean {
   return busy.value && i === msgs.value.length - 1 && !msgs.value[i].content
@@ -321,6 +420,20 @@ defineExpose({ clearChat })
                       </button>
                     </div>
                     <span class="ai-step-txt">{{ s.error || s.summary }}</span>
+                    <!-- 工具结果富 UI：列表/设置类渲染成卡片 -->
+                    <div v-if="tt(s)" class="toolcard">
+                      <table>
+                        <thead>
+                          <tr><th v-for="col in tt(s)!.cols" :key="col">{{ col }}</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(r, ri) in tt(s)!.rows" :key="ri">
+                            <td v-for="(cell, ci) in r" :key="ci" :class="cell.cls">{{ cell.t }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div v-if="tt(s)!.more > 0" class="toolcard-more">还有 {{ tt(s)!.more }} 条未展开，点「详情」看全部</div>
+                    </div>
                     <pre v-if="s.detail && stepExpanded(i + '-' + j)" class="ai-step-detail">{{ s.detail }}</pre>
                   </div>
                 </div>
