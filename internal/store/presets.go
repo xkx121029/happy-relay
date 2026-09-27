@@ -120,8 +120,6 @@ const (
 	baseNvidiaNIM   = "https://integrate.api.nvidia.com/v1"
 	baseGroq        = "https://api.groq.com/openai/v1"
 	baseHunyuan     = "https://api.hunyuan.cloud.tencent.com/v1"
-	// GitHub Models 接口直接挂在根路径，没有 /v1 前缀，因此单独标记 no_version_path。
-	baseGitHub = "https://models.inference.ai.azure.com"
 )
 
 // ModelPresets 返回内置的永久免费模型预设（无需充值，仅有账号 / 实名 / 限速门槛）。
@@ -462,55 +460,6 @@ func ModelPresets() []ModelPreset {
 		},
 	}
 
-	// GitHub Models：所有 GitHub 账号免费，用 PAT（models:read）调用，覆盖 GPT-4o / o3 等。
-	// 接口直接挂在根路径，没有 /v1 前缀，因此标记 no_version_path。
-	github := []ModelPreset{
-		{
-			ID: "github-gpt-4o", Name: "GPT-4o（GitHub Models）",
-			ProviderKind: KindOpenAI, ProviderName: "GitHub Models",
-			ProviderBaseURL: baseGitHub, NoVersionPath: true,
-			SignupURL: "https://github.com/marketplace/models",
-			UpstreamName: "gpt-4o", Capability: CapChat,
-			ContextLength: 128000, Free: true,
-			InputModalities: visionImage, OutputModalities: text,
-			Description:  "GitHub 账号免费调用 GPT-4o，可识图，单请求限 8K 入 / 4K 出",
-			ProviderNote: "用 GitHub 个人令牌（PAT，需 models:read 权限）作密钥；速率受 Copilot 套餐限制。",
-		},
-		{
-			ID: "github-gpt-4.1-mini", Name: "GPT-4.1-mini（GitHub Models）",
-			ProviderKind: KindOpenAI, ProviderName: "GitHub Models",
-			ProviderBaseURL: baseGitHub, NoVersionPath: true,
-			SignupURL: "https://github.com/marketplace/models",
-			UpstreamName: "gpt-4.1-mini", Capability: CapChat,
-			ContextLength: 1000000, Free: true,
-			InputModalities: text, OutputModalities: text,
-			Description:  "GitHub 账号免费调用，1M 长上下文，适合长文档",
-			ProviderNote: "用 GitHub 个人令牌（PAT，需 models:read 权限）作密钥；速率受 Copilot 套餐限制。",
-		},
-		{
-			ID: "github-deepseek-r1", Name: "DeepSeek-R1（GitHub Models）",
-			ProviderKind: KindOpenAI, ProviderName: "GitHub Models",
-			ProviderBaseURL: baseGitHub, NoVersionPath: true,
-			SignupURL: "https://github.com/marketplace/models",
-			UpstreamName: "DeepSeek-R1", Capability: CapChat,
-			ContextLength: 65536, Free: true,
-			InputModalities: text, OutputModalities: text,
-			Description:  "GitHub 账号免费调用 R1 推理模型，擅长数学与代码",
-			ProviderNote: "用 GitHub 个人令牌（PAT，需 models:read 权限）作密钥；速率受 Copilot 套餐限制。",
-		},
-		{
-			ID: "github-llama-3.3-70b", Name: "Llama-3.3-70B（GitHub Models）",
-			ProviderKind: KindOpenAI, ProviderName: "GitHub Models",
-			ProviderBaseURL: baseGitHub, NoVersionPath: true,
-			SignupURL: "https://github.com/marketplace/models",
-			UpstreamName: "Meta-Llama-3.3-70B-Instruct", Capability: CapChat,
-			ContextLength: 131072, Free: true,
-			InputModalities: text, OutputModalities: text,
-			Description:  "GitHub 账号免费调用 70B 开源大模型，中英均衡",
-			ProviderNote: "用 GitHub 个人令牌（PAT，需 models:read 权限）作密钥；速率受 Copilot 套餐限制。",
-		},
-	}
-
 	out := make([]ModelPreset, 0, 32)
 	out = append(out, zhipu...)
 	out = append(out, silicon...)
@@ -521,22 +470,20 @@ func ModelPresets() []ModelPreset {
 	out = append(out, nvidia...)
 	out = append(out, groq...)
 	out = append(out, hunyuan...)
-	out = append(out, github...)
 
 	// realnameByPlatform 标记各平台是否需要实名认证。
-	// 大陆平台普遍要求实名；海外平台（GitHub / Groq / OpenRouter / NVIDIA）
+	// 大陆平台普遍要求实名；海外平台（Groq / OpenRouter / NVIDIA）
 	// 只要注册账号，NVIDIA 另需手机号验证但不是实名认证。
 	realnameByPlatform := map[string]bool{
-		"智谱 GLM":              true,
+		"智谱 GLM":           true,
 		"硅基流动 SiliconFlow": true,
-		"魔搭 ModelScope":       true,
-		"百度千帆":              true,
-		"讯飞星火":              true,
-		"腾讯混元":              true,
-		"OpenRouter":           false,
-		"NVIDIA NIM":           false,
-		"Groq":                 false,
-		"GitHub Models":        false,
+		"魔搭 ModelScope":    true,
+		"百度千帆":             true,
+		"讯飞星火":             true,
+		"腾讯混元":             true,
+		"OpenRouter":       false,
+		"NVIDIA NIM":       false,
+		"Groq":             false,
 	}
 	for i := range out {
 		out[i].RealnameRequired = realnameByPlatform[out[i].ProviderName]
