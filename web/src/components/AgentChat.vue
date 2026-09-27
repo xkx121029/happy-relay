@@ -134,6 +134,15 @@ const actionLabel: Record<string, string> = {
   list_logs: '查看日志',
   upstream_stats: '上游画像',
   clear_logs: '清空日志',
+  list_tasks: '查看任务',
+  delete_task: '删除任务',
+  test_provider: '探测渠道',
+  reset_provider: '复位熔断',
+  list_health: '巡检记录',
+  self_check: '配置自省',
+  test_notify: '测试通知',
+  feishu_status: '飞书状态',
+  export_backup: '导出备份',
 }
 
 function stepName(s: AgentStep): string {
@@ -216,7 +225,8 @@ function buildToolView(s: AgentStep): ToolView | null {
       cols = ['技能', '类型', '说明', '状态']
       rows = arr.map((k) => [c(k.name, 'name'), c(capLabel(k.capability), 'cap'), c(trunc(k.description, 40)), statusCell(k.enabled)])
       break
-    case 'get_settings': {
+    case 'get_settings':
+    case 'feishu_status': {
       if (!s.detail) return null
       let obj: Record<string, string> | null = null
       try {

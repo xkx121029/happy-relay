@@ -44,6 +44,8 @@ const form = reactive({
   alert_webhook: '',
   notify_feishu_chat_id: '',
   alert_min_fails: '',
+  // ---- Agent ----
+  agent_full_access: false,
   // ---- 飞书整合（入站 webhook 桥） ----
   bridge_feishu_enabled: false,
   bridge_feishu_transport: 'ws',
@@ -269,6 +271,7 @@ async function load() {
     form.log_retention_days = s.log_retention_days || ''
     form.alert_webhook = s.alert_webhook || ''
     form.notify_feishu_chat_id = s.notify_feishu_chat_id || ''
+    form.agent_full_access = s.agent_full_access === 'on'
     form.alert_min_fails = s.alert_min_fails || ''
     // ---- 飞书整合 ----
     form.bridge_feishu_enabled = s.bridge_feishu_enabled
@@ -395,6 +398,7 @@ async function save() {
       alert_enabled: form.alert_enabled ? 'on' : 'off',
       alert_webhook: form.alert_webhook.trim(),
       notify_feishu_chat_id: form.notify_feishu_chat_id.trim(),
+      agent_full_access: form.agent_full_access ? 'on' : 'off',
       alert_min_fails: numStr(form.alert_min_fails),
 
       // ---- 飞书整合 ----
@@ -716,6 +720,18 @@ const checkSummary = computed(() => {
               <option v-for="m in chatModels" :key="m.id" :value="m.name">{{ m.name }}</option>
             </select>
             <div class="hint">「连接器生成器」与「技能生成」会用它，请选择一个文本对话模型。</div>
+          </div>
+          <div class="field">
+            <label>Agent 最大权限</label>
+            <label class="switch">
+              <input v-model="form.agent_full_access" type="checkbox" />
+              <span class="track" />
+              <span>{{ form.agent_full_access ? '已开启（免确认直接执行）' : '已关闭（删除类需二次确认）' }}</span>
+            </label>
+            <div class="hint">
+              开启后站内 Agent 可直接执行全部工具（模型/渠道/秘钥/任务增删、熔断复位、备份导出等），
+              删除与清空类操作不再要求二次确认，执行前 Agent 会口头说明后果。仅建议自用环境开启。
+            </div>
           </div>
           <div class="subhead">auto 路由规则</div>
           <div class="field">
