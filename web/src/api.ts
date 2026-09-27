@@ -742,7 +742,7 @@ export const api = {
     }),
 
   bridgeFeishuStatus: () =>
-    get<{
+    request<{
       enabled: boolean
       transport: string
       credentials_ok: boolean
