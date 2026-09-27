@@ -681,6 +681,71 @@ defineExpose({ clearChat })
   font-size: 11px;
   word-break: break-word;
 }
+/* 工具结果富 UI 卡片：列表/设置类工具的表格化呈现 */
+.toolcard {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.toolcard table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.toolcard th {
+  text-align: left;
+  padding: 6px 9px;
+  font-weight: 600;
+  color: var(--text-mute);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  white-space: nowrap;
+}
+.toolcard td {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolcard tr:last-child td {
+  border-bottom: none;
+}
+.toolcard td.name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 500;
+}
+.toolcard td.cap {
+  color: var(--accent-text);
+  background: var(--accent-dim);
+  border-radius: 4px;
+  padding: 1px 6px;
+  display: inline-block;
+  font-size: 10.5px;
+  margin: 1px 0;
+}
+.toolcard td.ok {
+  color: #3fb950;
+  font-weight: 600;
+}
+.toolcard td.off {
+  color: var(--text-mute);
+}
+.toolcard-more {
+  padding: 5px 9px;
+  font-size: 10.5px;
+  color: var(--text-mute);
+  background: var(--bg-elev-2);
+  border-top: 1px solid var(--border);
+}
 .ai-step-divider {
   border-top: 1px dashed var(--border);
   margin: 6px 0 8px;
