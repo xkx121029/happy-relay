@@ -48,7 +48,7 @@ const groups: { name: string; items: NavItem[] }[] = [
 const allItems = groups.flatMap((g) => g.items)
 
 // 移动端底部标签栏只放高频入口，其余收进「更多」面板。
-const TAB_PATHS = ['/', '/playground', '/providers', '/models']
+const TAB_PATHS = ['/', '/agent', '/playground', '/providers', '/models']
 const tabs = computed(() => TAB_PATHS.map((p) => allItems.find((i) => i.path === p)).filter(Boolean) as NavItem[])
 const moreItems = computed(() => allItems.filter((i) => !TAB_PATHS.includes(i.path)))
 
