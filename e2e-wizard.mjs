@@ -61,7 +61,7 @@ try {
   const wiz = page.locator('.feishu-wizard')
   await wiz.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)
-  await page.screenshot({ path: 'D:/xkx/xkx_appproj/happy_中转站/e2e-wizard.png', clip: null })
+  await page.screenshot({ path: 'D:/xkx/xkx_appproj/happy_中转站/e2e-wizard.png' })
 } catch (e) {
   results.push('FAIL 异常: ' + e.message)
 } finally {
