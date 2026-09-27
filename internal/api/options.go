@@ -14,6 +14,8 @@ const (
 	SettingPanelTitle  = "panel_title"  // 面板标题
 	SettingSystemModel = "system_model" // 系统级 AI 使用的对外模型名
 
+	SettingAgentFullAccess = "agent_full_access" // on/off：Agent 最大权限（删除/清空类免 confirm，直接执行）
+
 	SettingMaxLogRows   = "max_log_rows"   // 调用日志保留条数上限
 	SettingLogBody      = "log_body"       // on/off：是否把请求与响应体落库
 	SettingLogBodyLimit = "log_body_limit_kb" // 单条日志请求/响应体的记录上限（KB），超出截断
