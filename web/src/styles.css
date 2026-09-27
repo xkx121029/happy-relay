@@ -1786,7 +1786,8 @@ details.pg-params > summary:hover {
   margin: 12px 0 6px;
   font-size: 14px;
 }
-.msg .bubble ul {
+.msg .bubble ul,
+.msg .bubble ol {
   padding-left: 20px;
   margin: 6px 0;
 }
@@ -1798,7 +1799,7 @@ details.pg-params > summary:hover {
   border-radius: var(--radius-xs);
   border: 1px solid var(--border);
 }
-.msg .bubble pre.md-code {
+.msg .bubble pre.md-pre {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1806,12 +1807,46 @@ details.pg-params > summary:hover {
   overflow-x: auto;
   margin: 8px 0;
 }
-.msg .bubble pre.md-code code {
+.msg .bubble pre.md-pre code {
   background: none;
   border: none;
   padding: 0;
   font-size: 12.2px;
   line-height: 1.6;
+}
+.msg .bubble .md-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 8px 0;
+}
+.msg .bubble .md-table th,
+.msg .bubble .md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  text-align: left;
+}
+.msg .bubble .md-table th {
+  background: var(--bg-elev-2);
+  font-weight: 600;
+}
+.msg .bubble .md-quote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-dim);
+}
+.msg .bubble .md-quote p {
+  margin: 4px 0;
+}
+.msg .bubble .md-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.msg .bubble del {
+  color: var(--text-mute);
 }
 
 .reasoning {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUpdated, ref } from 'vue'
 import { api } from '../api'
+import { renderMarkdown } from '../utils'
 
 // ---------- 站内 Agent 聊天核心（悬浮球与独立 Agent 页共用） ----------
 // 主模型以与用户相同的管理权限跑工具循环：查配置、建模型、改设置、删秘钥……
@@ -66,7 +67,8 @@ function clearChat() {
 
 onMounted(restoreChat)
 
-// 给回复里的代码块 `<pre class="md-pre">` 注入「复制」按钮（v-html 内容无法直接绑事件，故 DOM 后处理）。
+// ---------- 轻量 markdown：与调试台共用 utils.renderMarkdown（转义在前，防 XSS） ----------
+// 给回复里的代码块注入「复制」按钮（v-html 内容无法直接绑事件，故 DOM 后处理）。
 function decorateCodeBlocks() {
   const root = rootEl.value
   if (!root) return
@@ -272,61 +274,6 @@ function liveStatus(m: AgentMsg): string {
 function pendingConfirm(m: AgentMsg): boolean {
   if (m.steps?.some((s) => !s.ok && /confirm|征得同意|不可逆/.test(s.error || ''))) return true
   return /您是否|是否同意|征得.*同意|确认执行|不可逆操作|请确认/.test(m.content)
-}
-
-// ---------- 轻量 markdown（先转义，防 XSS） ----------
-function escapeHTML(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-function renderMarkdown(src: string): string {
-  const esc = escapeHTML(src)
-  // 代码块 ```lang\n...```
-  const blocks: string[] = []
-  let s = esc.replace(/```(?:[a-zA-Z0-9]*)\n?([\s\S]*?)```/g, (_m, code) => {
-    const i = blocks.push(`<pre class="md-pre"><code>${code.replace(/\n$/, '')}</code></pre>`) - 1
-    return `<!--MD-BLOCK-${i}-->`
-  })
-  // 行内 `code`
-  s = s.replace(/`([^`\n]+?)`/g, (_m, c) => `<code class="md-code">${c}</code>`)
-  // 粗体 **x**
-  s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>')
-  // 段落与列表
-  const lines = s.split(/\n/)
-  let html = ''
-  let inUl = false
-  const closeUl = () => {
-    if (inUl) {
-      html += '</ul>'
-      inUl = false
-    }
-  }
-  for (const ln of lines) {
-    const ph = ln.match(/^<!--MD-BLOCK-(\d+)-->$/)
-    if (ph) {
-      closeUl()
-      html += blocks[+ph[1]]
-      continue
-    }
-    const li = ln.match(/^\s*[-*]\s+(.*)$/)
-    if (li) {
-      if (!inUl) {
-        html += '<ul class="md-ul">'
-        inUl = true
-      }
-      html += `<li>${li[1]}</li>`
-      continue
-    }
-    closeUl()
-    if (ln.trim() === '') {
-      html += '<div class="md-sp"></div>'
-    } else {
-      html += `<p>${ln}</p>`
-    }
-  }
-  closeUl()
-  // 还原代码块占位
-  html = html.replace(/<!--MD-BLOCK-(\d+)-->/g, (_m, i) => blocks[+i])
-  return html
 }
 
 // ---------- 发送 ----------
@@ -777,20 +724,70 @@ defineExpose({ clearChat })
 .md :deep(p:last-child) {
   margin-bottom: 0;
 }
-.md :deep(.md-sp) {
-  height: 6px;
-}
 .md :deep(strong) {
   color: var(--text);
   font-weight: 700;
 }
-.md :deep(.md-code) {
+.md :deep(code) {
   font-family: var(--mono);
   font-size: 12px;
   background: var(--border);
   padding: 1px 5px;
   border-radius: 4px;
   color: var(--accent-text);
+}
+.md :deep(h3),
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  color: var(--text);
+}
+.md :deep(h3:first-child),
+.md :deep(h4:first-child) {
+  margin-top: 0;
+}
+.md :deep(.md-quote) {
+  margin: 6px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-dim);
+}
+.md :deep(.md-quote p) {
+  margin: 4px 0;
+}
+.md :deep(.md-hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.md :deep(.md-table) {
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0;
+  width: 100%;
+}
+.md :deep(.md-table th),
+.md :deep(.md-table td) {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  color: var(--text-dim);
+}
+.md :deep(.md-table th) {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.md :deep(.md-ol) {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.md :deep(del) {
+  color: var(--text-mute);
 }
 .md :deep(.md-pre) {
   position: relative;

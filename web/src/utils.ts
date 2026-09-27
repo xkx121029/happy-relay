@@ -70,16 +70,16 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-// renderMarkdown 是一个刻意保持简单的渲染器：只处理代码块、标题、列表、
-// 粗体、行内代码与链接，输出前统一转义，避免 XSS。
+// renderMarkdown 是一个刻意保持简单的渲染器：代码块、标题、无序/有序列表、
+// 表格、引用、分隔线、粗体/斜体/删除线/行内代码与链接，输出前统一转义，避免 XSS。
 export function renderMarkdown(src: string): string {
   const blocks: string[] = []
-  let text = src.replace(/\r\n/g, '\n')
+  let text = (src || '').replace(/\r\n/g, '\n')
 
-  text = text.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+  text = text.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
     const idx = blocks.length
     blocks.push(
-      `<pre class="md-code"><code data-lang="${escapeHtml(lang || '')}">${escapeHtml(
+      `<pre class="md-pre"><code data-lang="${escapeHtml(lang || '')}">${escapeHtml(
         code.replace(/\n$/, ''),
       )}</code></pre>`,
     )
@@ -88,58 +88,132 @@ export function renderMarkdown(src: string): string {
 
   const lines = text.split('\n')
   const out: string[] = []
-  let inList = false
-  let paragraph: string[] = []
+  let para: string[] = []
+  let listType: '' | 'ul' | 'ol' = ''
+  let quote: string[] = []
 
-  const flushParagraph = () => {
-    if (paragraph.length) {
-      out.push(`<p>${paragraph.map(inline).join('<br/>')}</p>`)
-      paragraph = []
+  const flushPara = () => {
+    if (para.length) {
+      out.push(`<p>${para.map(inline).join('<br/>')}</p>`)
+      para = []
     }
   }
   const closeList = () => {
-    if (inList) {
-      out.push('</ul>')
-      inList = false
+    if (listType) {
+      out.push(`</${listType}>`)
+      listType = ''
     }
+  }
+  const flushQuote = () => {
+    if (quote.length) {
+      out.push(`<blockquote class="md-quote">${quote.map((q) => `<p>${inline(q)}</p>`).join('')}</blockquote>`)
+      quote = []
+    }
+  }
+  const flushAll = () => {
+    flushPara()
+    closeList()
+    flushQuote()
   }
 
-  for (const raw of lines) {
-    const line = raw
-    if (/^\u0000BLOCK\d+\u0000$/.test(line.trim())) {
-      flushParagraph()
-      closeList()
-      out.push(line.trim())
+  // 表格分隔行：| --- | :---: | 之类
+  const isTableSep = (l: string) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(l.trim()) && l.includes('-')
+  const splitRow = (l: string) =>
+    l
+      .trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((c) => inline(c.trim()))
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    const t = raw.trim()
+
+    if (/^\u0000BLOCK\d+\u0000$/.test(t)) {
+      flushAll()
+      out.push(t)
       continue
     }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/)
-    if (heading) {
-      flushParagraph()
-      closeList()
-      const level = heading[1].length
-      out.push(`<h${level + 2}>${inline(heading[2])}</h${level + 2}>`)
-      continue
-    }
-    const item = line.match(/^\s*[-*+]\s+(.*)$/)
-    if (item) {
-      flushParagraph()
-      if (!inList) {
-        out.push('<ul>')
-        inList = true
+
+    // 表格：本行以 | 开头且下一行是分隔行
+    if (t.startsWith('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushAll()
+      const rows = [t]
+      let j = i + 2
+      while (j < lines.length && lines[j].trim().startsWith('|')) {
+        rows.push(lines[j].trim())
+        j++
       }
-      out.push(`<li>${inline(item[1])}</li>`)
+      i = j - 1
+      const head = splitRow(rows[0])
+      const body = rows.slice(1).map(splitRow)
+      out.push(
+        '<table class="md-table"><thead><tr>' +
+          head.map((h) => `<th>${h}</th>`).join('') +
+          '</tr></thead><tbody>' +
+          body.map((r) => '<tr>' + r.map((c) => `<td>${c}</td>`).join('') + '</tr>').join('') +
+          '</tbody></table>',
+      )
       continue
     }
-    if (line.trim() === '') {
-      flushParagraph()
+
+    const heading = t.match(/^(#{1,4})\s+(.*)$/)
+    if (heading) {
+      flushAll()
+      const level = heading[1].length + 2
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`)
+      continue
+    }
+
+    if (/^(-{3,}|\*{3,})$/.test(t)) {
+      flushAll()
+      out.push('<hr class="md-hr"/>')
+      continue
+    }
+
+    const q = t.match(/^>\s?(.*)$/)
+    if (q) {
+      flushPara()
       closeList()
+      quote.push(q[1])
       continue
     }
+    flushQuote()
+
+    const ul = raw.match(/^\s*[-*+]\s+(.*)$/)
+    if (ul) {
+      flushPara()
+      if (listType !== 'ul') {
+        closeList()
+        out.push('<ul class="md-ul">')
+        listType = 'ul'
+      }
+      out.push(`<li>${inline(ul[1])}</li>`)
+      continue
+    }
+
+    const ol = raw.match(/^\s*\d+[.)]\s+(.*)$/)
+    if (ol) {
+      flushPara()
+      if (listType !== 'ol') {
+        closeList()
+        out.push('<ol class="md-ol">')
+        listType = 'ol'
+      }
+      out.push(`<li>${inline(ol[1])}</li>`)
+      continue
+    }
+
+    if (t === '') {
+      flushAll()
+      continue
+    }
+
     closeList()
-    paragraph.push(line)
+    para.push(raw)
   }
-  flushParagraph()
-  closeList()
+  flushAll()
 
   let html = out.join('\n')
   html = html.replace(/\u0000BLOCK(\d+)\u0000/g, (_m, i) => blocks[Number(i)] || '')
@@ -150,6 +224,8 @@ function inline(s: string): string {
   let out = escapeHtml(s)
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>')
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
   out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
   return out
 }
