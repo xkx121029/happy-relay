@@ -235,8 +235,18 @@ function buildToolView(s: AgentStep): ToolView | null {
     default:
       return null
   }
-  const more = Math.max(0, rows.length - TOOL_MAX_ROWS)
-  return { cols, rows: rows.slice(0, TOOL_MAX_ROWS), more }
+  const cap = s.action === 'get_settings' ? 20 : TOOL_MAX_ROWS
+  const more = Math.max(0, rows.length - cap)
+  return { cols, rows: rows.slice(0, cap), more }
+}
+
+// summaryShort：富卡片已展示结构化结果时，把 summary 里的裸 JSON 尾巴剪掉。
+function summaryShort(s: AgentStep): string {
+  if (!tt(s) || !s.summary) return s.summary
+  const idx = s.summary.search(/：\s*[\[{]/)
+  if (idx >= 0) return s.summary.slice(0, idx)
+  if (/^[\[{]/.test(s.summary.trim())) return '读取成功，结果如下'
+  return s.summary
 }
 
 // 该消息是否正处于「流式执行中」：是最后一条 + busy + 尚无最终回复
@@ -419,7 +429,7 @@ defineExpose({ clearChat })
                         {{ stepExpanded(i + '-' + j) ? '收起' : '详情' }}
                       </button>
                     </div>
-                    <span class="ai-step-txt">{{ s.error || s.summary }}</span>
+                    <span class="ai-step-txt">{{ s.error || summaryShort(s) }}</span>
                     <!-- 工具结果富 UI：列表/设置类渲染成卡片 -->
                     <div v-if="tt(s)" class="toolcard">
                       <table>
