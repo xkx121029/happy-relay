@@ -32,7 +32,6 @@ const groups: { name: string; items: NavItem[] }[] = [
       { path: '/models', label: '模型', desc: '配置对外模型与映射', icon: 'chip' },
       { path: '/builtin', label: '内置模型', desc: '永久免费平台目录与一键接入', icon: 'gift' },
       { path: '/keys', label: '秘钥', desc: '分发给客户端的访问凭据', icon: 'key' },
-      { path: '/skills', label: '技能', desc: '带参数的提示词模板', icon: 'wand' },
     ],
   },
   {

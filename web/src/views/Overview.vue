@@ -207,7 +207,7 @@ function taskLabel(status: string) {
         <div class="stat">
           <div class="label">资源数量</div>
           <div class="value">{{ stats.providers }}<span style="font-size: 13px"> 渠道</span></div>
-          <div class="foot">{{ stats.models }} 模型 · {{ stats.keys }} 秘钥 · {{ stats.skills }} 技能</div>
+          <div class="foot">{{ stats.models }} 模型 · {{ stats.keys }} 秘钥</div>
         </div>
       </div>
 

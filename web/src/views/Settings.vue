@@ -123,7 +123,6 @@ const pageOptions = [
   { value: '/models', label: '模型' },
   { value: '/builtin', label: '内置模型' },
   { value: '/keys', label: '秘钥' },
-  { value: '/skills', label: '技能' },
   { value: '/connector', label: '连接器生成器' },
   { value: '/logs', label: '调用日志' },
 ]
