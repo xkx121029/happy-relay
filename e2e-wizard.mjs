@@ -1,5 +1,5 @@
 // 验证「飞书配置向导」：渲染、步骤状态、跳转高亮
-import { chromium } from 'playwright-core'
+import { chromium } from 'file:///C:/Users/linch/.workbuddy/binaries/node/workspace/node_modules/playwright-core/index.mjs'
 
 const exe = 'C:/Users/linch/AppData/Local/ms-playwright/chromium-1244/chrome-win/chrome.exe'
 const results = []
