@@ -24,6 +24,12 @@ type Config struct {
 	BreakerFails   int    // 渠道连续失败多少次后熔断（0 关闭）
 	BreakerCoolSec int    // 熔断冷却时间（秒）
 	AlertWebhook   string // 渠道熔断/失败时推送告警的 Webhook 地址（飞书/企业微信机器人）
+
+	TLSCert string // TLS 证书路径（配置后启用 HTTPS，自动升级 HTTP/2）
+	TLSKey  string // TLS 私钥路径
+	H2C     bool   // 明文 HTTP/2（h2c）：无 TLS 时也接受 h2 预检，适合挂在支持 h2c 透传的公网代理后面
+
+	AdminPassword string // 管理员密码（环境变量兜底/换密码通道，设置页配置优先以此为准）
 }
 
 func Load() *Config {
@@ -38,11 +44,18 @@ func Load() *Config {
 		VideoPollSec:   getenvInt("RELAY_VIDEO_POLL", 10),
 		DisableLogBody: getenvBool("RELAY_DISABLE_LOG_BODY", false),
 		StreamSmooth:   getenvBool("RELAY_STREAM_SMOOTH", true),
-		StreamRate:     getenvInt("RELAY_STREAM_RATE", 120),
+		// 600 字/秒：打字机观感仍在，但 600 字回复的人为拖长 <1s（120 字/秒时长达 5s，是「调用特别慢」的主因）。
+		StreamRate:   getenvInt("RELAY_STREAM_RATE", 600),
 		HeartbeatSec:   getenvIntZero("RELAY_SSE_HEARTBEAT", 15),
 		BreakerFails:   getenvIntZero("RELAY_BREAKER_FAILS", 5),
 		BreakerCoolSec: getenvInt("RELAY_BREAKER_COOLDOWN", 60),
 		AlertWebhook:   getenv("RELAY_ALERT_WEBHOOK", ""),
+
+		TLSCert: getenv("RELAY_TLS_CERT", ""),
+		TLSKey:  getenv("RELAY_TLS_KEY", ""),
+		H2C:     getenvBool("RELAY_H2C", true),
+
+		AdminPassword: getenv("RELAY_ADMIN_PASSWORD", ""),
 	}
 	return cfg
 }

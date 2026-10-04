@@ -29,6 +29,13 @@ services:
       RELAY_MAX_LOG_ROWS: "20000"
       # 设为 1 可关闭请求体 / 响应预览落库
       RELAY_DISABLE_LOG_BODY: "0"
+      # 公网 TCP 加速：配证书后启用 HTTPS（自动 HTTP/2 多路复用）
+      # RELAY_TLS_CERT: "/data/cert.pem"
+      # RELAY_TLS_KEY: "/data/key.pem"
+      # 明文 HTTP/2（h2c）：挂在支持 h2c 透传的代理/CDN 后面时保持端到端 h2
+      RELAY_H2C: "1"
+      # 管理员密码兜底通道（设置页配置优先）。忘记密码时设上它重启即可重新进面板：
+      # RELAY_ADMIN_PASSWORD: "换成你的密码"
       TZ: "Asia/Shanghai"
     volumes:
       - ./data:/data

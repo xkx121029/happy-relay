@@ -52,10 +52,17 @@ func gzipMiddleware(next http.Handler) http.Handler {
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gzw *gzip.Writer
+	gzw         *gzip.Writer
+	wroteHeader bool
 }
 
 func (g *gzipResponseWriter) WriteHeader(status int) {
+	// 防重入：Write() 兜底补 200 与 handler 显式调用可能各来一次，
+	// 重复 WriteHeader 会刷 http: superfluous 警告。
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
 	if g.gzw == nil && status != http.StatusNoContent && compressible(g.Header().Get("Content-Type")) {
 		w := gzipWriterPool.Get().(*gzip.Writer)
 		w.Reset(g.ResponseWriter)
@@ -69,7 +76,7 @@ func (g *gzipResponseWriter) WriteHeader(status int) {
 }
 
 func (g *gzipResponseWriter) Write(b []byte) (int, error) {
-	if g.gzw == nil {
+	if !g.wroteHeader {
 		// 处理器没显式调 WriteHeader 的场景，按 200 补一次判定。
 		g.WriteHeader(http.StatusOK)
 	}

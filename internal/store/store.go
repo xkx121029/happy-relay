@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,6 +19,68 @@ var ErrNotFound = errors.New("记录不存在")
 
 type Store struct {
 	db *sql.DB
+
+	// 调用日志异步写队列：/v1 热路径的日志落库（带最大 128KB 正文）不再阻塞
+	// 请求 goroutine，由后台 worker 串行落库。队列满时退化为同步写（背压优先于丢数据）。
+	// done 非空时表示"这条落完要通知一下"——FlushUsageLogs 靠它实现真正的等落库
+	// （原先只等队列排空，worker 还没写完就读，读到的是上一条，属于假同步）。
+	logCh   chan logItem
+	logDone chan struct{}
+
+	// 每把秘钥当日用量的内存缓存：配额校验从「每次调用扫一遍今日日志」
+	// 降为 O(1) 内存读；缓存随日志写入增量维护，按天翻转/首查回源。
+	keyUsageMu sync.Mutex
+	keyUsage   map[string]*dailyUsage
+
+	// last_used_at 写库节流：记录每把秘钥上次 UPDATE 时刻。
+	touchMu sync.Mutex
+	touchAt map[string]time.Time
+
+	// 秘钥查询缓存：/v1 每次调用的第一件事就是按秘钥字面量查库，
+	// 命中内存后省掉一次单连接库上的 SELECT。增删改整体作废。
+	keyCacheMu sync.RWMutex
+	keyCache   map[string]APIKey
+
+	// 面板统计短 TTL 缓存（3s）：Overview/Stats 是多路全表聚合，
+	// 多人同时刷新面板时避免反复打满单连接库。
+	statsMu        sync.Mutex
+	statsVal       *Stats
+	statsAt        time.Time
+	dailyMu        sync.Mutex
+	statsDaily     []map[string]any
+	statsDailyDays int
+	dailyAt        time.Time
+
+	// ---- 模型解析热路径缓存（基准实测：5000 条上游目录时，
+	// ResolveModel 3.15ms / ListModels 8.8ms，其中大头是每次全表扫
+	// catalog_models 重建上下文索引。这里用「写操作版本号」做失效：
+	// 任何模型/渠道/目录写操作让 gen 自增，读缓存发现版本变了就重建。
+	// 读多写少的场景下这是最省事也最不容易出错的缓存策略（不会像 TTL
+	// 那样出现「刚建好模型却查不到」的窗口）。
+	gen atomic.Int64
+
+	catalogMu    sync.Mutex
+	catalogGen   int64
+	catalogIndex map[string]int
+
+	modelsMu     sync.Mutex
+	modelsGen    int64
+	modelsList   []Model
+	modelsByName map[string]Model
+
+	providersMu   sync.Mutex
+	providersGen  int64
+	providersByID map[int64]Provider
+}
+
+// bumpGen 在模型/渠道/目录写操作后调用，让读缓存失效。
+func (s *Store) bumpGen() { s.gen.Add(1) }
+
+// dailyUsage 是单把秘钥当日（calls, tokens）缓存；day 用于跨天翻转。
+type dailyUsage struct {
+	day    string
+	calls  int64
+	tokens int64
 }
 
 // Open 打开（并在需要时创建）数据库，随后执行建表迁移。
@@ -34,14 +98,27 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{
+		db:       db,
+		logCh:    make(chan logItem, 1024),
+		logDone:  make(chan struct{}),
+		keyUsage: make(map[string]*dailyUsage),
+		touchAt:  make(map[string]time.Time),
+	}
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
+	go s.usageLogWorker()
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.logCh != nil {
+		close(s.logCh)
+		<-s.logDone // 等队列里的日志全部落库再关库
+	}
+	return s.db.Close()
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS providers (
@@ -141,6 +218,17 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_logs_created ON usage_logs(created_at DESC);
+-- 秘钥当日配额校验按 (api_key_name, created_at) 查询，组合索引把每次调用的
+-- 当日用量统计从「今日全量行过滤」变成索引范围扫描。
+CREATE INDEX IF NOT EXISTS idx_usage_logs_key_time ON usage_logs(api_key_name, created_at);
+-- 概览统计的聚合（COUNT/AVG/SUM + 失败判定）原本是全表扫描：
+-- usage_logs 带着最大 128KB 的请求正文，扫正文才是真正的开销。
+-- 这个索引只放聚合要用的窄列（全在索引里，不回表），实测 5 万行
+-- 20.7ms → 亚毫秒级。失败判定只看 status：AddUsageLog 已强制
+-- "有 error 必是 >=400"，不变量有测试守着。
+CREATE INDEX IF NOT EXISTS idx_usage_logs_stats ON usage_logs(
+	created_at, status, latency_ms, prompt_tokens, completion_tokens
+);
 CREATE INDEX IF NOT EXISTS idx_video_tasks_created ON video_tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 

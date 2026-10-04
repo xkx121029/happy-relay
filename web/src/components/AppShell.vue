@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NavIcon from './NavIcon.vue'
 import { cycleTheme, panelTitle, prefs, themeLabel, toast } from '../store'
+import { api } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,6 +39,7 @@ const groups: { name: string; items: NavItem[] }[] = [
     name: '工具',
     items: [
       { path: '/connector', label: '连接器生成器', desc: '用 AI 把接口描述翻译成模板', icon: 'plug' },
+      { path: '/user', label: '用户门户', desc: '持秘钥用户的自助界面（独立布局）', icon: 'chat' },
       { path: '/logs', label: '调用日志', desc: '请求明细与用量统计', icon: 'list' },
       { path: '/settings', label: '设置', desc: '面板与服务端选项', icon: 'sliders' },
     ],
@@ -88,7 +90,9 @@ const scrolled = ref(false)
 function onScroll() {
   scrolled.value = (window.scrollY || document.documentElement.scrollTop) > 4
 }
-onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }))
+onMounted(() => {
+  window.addEventListener('scroll', onScroll, { passive: true })
+})
 onUnmounted(() => window.removeEventListener('scroll', onScroll))
 </script>
 

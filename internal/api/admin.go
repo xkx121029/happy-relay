@@ -697,7 +697,77 @@ func (s *Server) handleLogClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleLogDetail 单条日志的完整正文（列表只带 600 字符预览，详情页按需取全量）。
+func (s *Server) handleLogDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "无效的日志 id")
+		return
+	}
+	l, err := s.st.GetUsageLog(id)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
 // ---------- 设置 ----------
+
+// normalizePublicURL 规范化对外链接：去空白与尾部斜杠；没有 scheme 时补 https://。
+// 穿透地址（frp / Cloudflare Tunnel 等）通常是 https，明文 http 需显式带上。
+func normalizePublicURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	u = strings.TrimRight(u, "/")
+	if u != "" && !strings.Contains(u, "://") {
+		u = "https://" + u
+	}
+	return u
+}
+
+// handlePublicURLCheck 校验「穿透后的对外链接」是否真的可达：服务端直接请求
+// {url}/healthz 并回传状态码与耗时，用户配完穿透点一下就知道通没通。
+// url 为空时用已保存的 public_url；请求体可选 {"url": "..."} 便于保存前先测。
+func (s *Server) handlePublicURLCheck(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := decodeBody(r, &payload); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "参数解析失败："+err.Error())
+		return
+	}
+	raw := strings.TrimSpace(payload.URL)
+	if raw == "" {
+		raw = s.options().PublicURL
+	}
+	u := normalizePublicURL(raw)
+	if u == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_request_error", "请先填写对外链接")
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second, Transport: relay.PooledTransport()}
+	start := time.Now()
+	resp, err := client.Get(u + "/healthz")
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "url": u, "latency_ms": latency,
+			"error": fmt.Sprintf("连接失败：%v（穿透未生效、端口没映射或证书不可信）", err),
+		})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	ok := resp.StatusCode == http.StatusOK && strings.Contains(string(body), `"ok"`)
+	result := map[string]any{
+		"ok": ok, "url": u, "status": resp.StatusCode, "latency_ms": latency,
+	}
+	if !ok {
+		result["error"] = fmt.Sprintf("能连上但响应异常（HTTP %d），确认地址指向的是本服务", resp.StatusCode)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.st.AllSettings()
@@ -705,7 +775,18 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		writeStoreErr(w, err)
 		return
 	}
+	// 密码哈希绝不下发，只告诉前端「是否已设」。
+	delete(settings, SettingAdminPassword)
+	delete(settings, SettingAdminSalt)
+	settings["admin_password_set"] = boolStr(s.adminGateEnabled())
 	writeJSON(w, http.StatusOK, settings)
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "1"
+	}
+	return ""
 }
 
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
@@ -713,6 +794,21 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if err := decodeBody(r, &payload); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_request_error", "参数解析失败："+err.Error())
 		return
+	}
+	// 管理员密码是特殊项：要哈希后单独落库，且不出现在普通设置 kv 里。
+	if pw, has := payload["admin_password"]; has {
+		if err := s.setAdminPassword(pw); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		delete(payload, "admin_password")
+	}
+	if v := payload["admin_password_clear"]; v == "1" || v == "on" {
+		if err := s.setAdminPassword(""); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		delete(payload, "admin_password_clear")
 	}
 	for k, v := range payload {
 		if err := s.st.SetSetting(k, v); err != nil {
@@ -728,6 +824,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// 飞书长连接按最新设置同步（配置变了会自动关旧起新）。
 	s.FeishuSyncWSClient()
 	settings, _ := s.st.AllSettings()
+	delete(settings, SettingAdminPassword)
+	delete(settings, SettingAdminSalt)
+	settings["admin_password_set"] = boolStr(s.adminGateEnabled())
 	writeJSON(w, http.StatusOK, settings)
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ---------- 渠道（上游） ----------
@@ -22,15 +23,15 @@ const (
 
 // Provider 是一个上游服务商，可挂多个入口地址与多个密钥。
 type Provider struct {
-	ID         int64             `json:"id"`
-	Name       string            `json:"name"`
-	Kind       string            `json:"kind"`
-	BaseURLs   []string          `json:"base_urls"`
-	APIKeys    []string          `json:"api_keys"`
-	Headers    map[string]string `json:"headers"`
-	Strategy   string            `json:"strategy"` // round_robin | random | failover | weighted
-	TimeoutSec int               `json:"timeout_sec"`
-	Weight     int               `json:"weight"` // 加权负载均衡权重，<=0 视为 1
+	ID            int64             `json:"id"`
+	Name          string            `json:"name"`
+	Kind          string            `json:"kind"`
+	BaseURLs      []string          `json:"base_urls"`
+	APIKeys       []string          `json:"api_keys"`
+	Headers       map[string]string `json:"headers"`
+	Strategy      string            `json:"strategy"` // round_robin | random | failover | weighted
+	TimeoutSec    int               `json:"timeout_sec"`
+	Weight        int               `json:"weight"` // 加权负载均衡权重，<=0 视为 1
 	Enabled       bool              `json:"enabled"`
 	Remark        string            `json:"remark"`
 	NoVersionPath bool              `json:"no_version_path"`
@@ -41,6 +42,8 @@ type Provider struct {
 }
 
 func (s *Store) ListProviders() ([]Provider, error) {
+	// 渠道表整体读一次，顺手把快照喂给 GetProvider 的缓存：
+	// 面板刷新一次后，后续 /v1 调用都能命中内存。
 	rows, err := s.db.Query(`SELECT id,name,kind,base_urls,api_keys,headers,strategy,
 		timeout_sec,enabled,remark,weight,no_version_path,created_at,updated_at,0 FROM providers ORDER BY id DESC`)
 	if err != nil {
@@ -60,6 +63,11 @@ func (s *Store) ListProviders() ([]Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	byID := make(map[int64]Provider, len(out))
+	for _, p := range out {
+		byID[p.ID] = p
+	}
+	s.storeProvidersSnapshot(byID)
 	counts, err := s.providerModelCounts()
 	if err != nil {
 		return nil, err
@@ -96,13 +104,64 @@ func (s *Store) providerModelCounts() (map[int64]int, error) {
 }
 
 func (s *Store) GetProvider(id int64) (Provider, error) {
+	// 渠道缓存：一次 /v1 调用里 ResolveAll 会对每个上游调一次本函数，
+	// 命中内存比走单连接库便宜一个数量级。
+	// 只认"这一条我确实缓存过"——缺席不等于不存在，miss 仍要查库。
+	if p, ok := s.lookupProvider(id); ok {
+		return p, nil
+	}
 	row := s.db.QueryRow(`SELECT id,name,kind,base_urls,api_keys,headers,strategy,timeout_sec,
 		enabled,remark,weight,no_version_path,created_at,updated_at,0 FROM providers WHERE id=?`, id)
 	p, err := scanProvider(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Provider{}, ErrNotFound
 	}
+	if err == nil {
+		// 顺手回填：ResolveAll 会连续问好几个渠道，第二个开始就命中内存。
+		// 注意这只是局部命中，不算完整快照（providersComplete 仍为 false），
+		// 否则查不到的其他渠道会被误判成"不存在"。
+		s.cacheProvider(p)
+	}
 	return p, err
+}
+
+// lookupProvider 按 id 查渠道缓存；版本号不匹配或未缓存时返回 ok=false。
+func (s *Store) lookupProvider(id int64) (Provider, bool) {
+	gen := s.gen.Load()
+	s.providersMu.Lock()
+	defer s.providersMu.Unlock()
+	if s.providersGen != gen || s.providersByID == nil {
+		return Provider{}, false
+	}
+	p, hit := s.providersByID[id]
+	return p, hit
+}
+
+// cacheProvider 回填单个渠道到缓存。版本号已变的场合直接丢弃，避免缓存旧值。
+func (s *Store) cacheProvider(p Provider) {
+	gen := s.gen.Load()
+	s.providersMu.Lock()
+	defer s.providersMu.Unlock()
+	if s.providersGen != gen || s.providersByID == nil {
+		if s.gen.Load() != gen {
+			return
+		}
+		s.providersByID = make(map[int64]Provider, 8)
+		s.providersGen = gen
+	}
+	s.providersByID[p.ID] = p
+}
+
+// storeProvidersSnapshot 落完整渠道快照（来自 ListProviders 的全表读）。
+func (s *Store) storeProvidersSnapshot(byID map[int64]Provider) {
+	gen := s.gen.Load()
+	s.providersMu.Lock()
+	defer s.providersMu.Unlock()
+	if s.gen.Load() != gen {
+		return
+	}
+	s.providersByID = byID
+	s.providersGen = gen
 }
 
 type scanner interface {
@@ -159,6 +218,7 @@ func (s *Store) SaveProvider(p Provider) (Provider, error) {
 		}
 		p.ID, _ = res.LastInsertId()
 		p.CreatedAt, p.UpdatedAt = ts, ts
+		s.bumpGen() // 写操作后让模型/目录读缓存失效
 		return p, nil
 	}
 	_, err := s.db.Exec(`UPDATE providers SET name=?,kind=?,base_urls=?,api_keys=?,headers=?,
@@ -169,6 +229,7 @@ func (s *Store) SaveProvider(p Provider) (Provider, error) {
 		return p, err
 	}
 	p.UpdatedAt = ts
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return p, nil
 }
 
@@ -185,6 +246,7 @@ func (s *Store) DeleteProvider(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return nil
 }
 
@@ -651,6 +713,13 @@ const modelSelect = `SELECT m.id,m.provider_id,COALESCE(p.name,''),COALESCE(p.ki
 	FROM models m LEFT JOIN providers p ON p.id=m.provider_id`
 
 func (s *Store) ListModels() ([]Model, error) {
+	// 走缓存：模型列表在一次 /v1 调用链里会被反复读（ListModels → 按名字查 →
+	// 可用性过滤），而它自身是「全表 + 逐行 JSON 反序列化」，是这条链上最贵的一步。
+	// 缓存由写操作版本号失效，不存在 TTL 那种「刚改完还读到旧值」的窗口。
+	if list, byName, ok := s.modelsSnapshot(); ok {
+		_ = byName
+		return list, nil
+	}
 	rows, err := s.db.Query(modelSelect + ` ORDER BY m.id DESC`)
 	if err != nil {
 		return nil, err
@@ -675,7 +744,37 @@ func (s *Store) ListModels() ([]Model, error) {
 	for i := range out {
 		fillCatalogContext(&out[i], index)
 	}
+	s.storeModelsSnapshot(out, index)
 	return out, nil
+}
+
+// modelsSnapshot 返回缓存的模型列表；版本号不匹配或尚未建立时返回 ok=false。
+func (s *Store) modelsSnapshot() ([]Model, map[string]Model, bool) {
+	gen := s.gen.Load()
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+	if s.modelsList == nil || s.modelsGen != gen {
+		return nil, nil, false
+	}
+	return s.modelsList, s.modelsByName, true
+}
+
+// storeModelsSnapshot 落缓存。调用方需已用 catalogIndex 补全上下文。
+// 若期间发生过写操作则丢弃这份结果，避免把旧数据当成新的缓存起来。
+func (s *Store) storeModelsSnapshot(list []Model, index map[string]int) {
+	gen := s.gen.Load()
+	byName := make(map[string]Model, len(list))
+	for i := range list {
+		fillCatalogContext(&list[i], index)
+		byName[list[i].Name] = list[i]
+	}
+	s.modelsMu.Lock()
+	if s.gen.Load() == gen {
+		s.modelsList = list
+		s.modelsByName = byName
+		s.modelsGen = gen
+	}
+	s.modelsMu.Unlock()
 }
 
 func (s *Store) GetModel(id int64) (Model, error) {
@@ -707,6 +806,18 @@ func (s *Store) GetModelByName(name string) (Model, error) {
 
 // ResolveModel 按对外模型名解析出可用模型（含渠道信息）。
 func (s *Store) ResolveModel(name string) (Model, error) {
+	// 命中模型列表缓存时直接给，省掉一次库查询 + JSON 反序列化。
+	// 找不到也直接返回 ErrNotFound：写操作会让版本号失效，不会出现
+	// 「刚建好的模型查不到」。
+	if _, byName, ok := s.modelsSnapshot(); ok {
+		if m, hit := byName[name]; hit {
+			if !m.Enabled {
+				return Model{}, ErrNotFound
+			}
+			return m, nil
+		}
+		return Model{}, ErrNotFound
+	}
 	m, err := scanModel(s.db.QueryRow(modelSelect+` WHERE m.name=? AND m.enabled=1`, name))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Model{}, ErrNotFound
@@ -813,6 +924,7 @@ func (s *Store) SaveModel(m Model) (Model, error) {
 		}
 		m.UpdatedAt = ts
 	}
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return s.GetModel(m.ID)
 }
 
@@ -824,6 +936,7 @@ func (s *Store) DeleteModel(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return nil
 }
 
@@ -875,8 +988,33 @@ func (s *Store) ListAPIKeys() ([]APIKey, error) {
 
 // FindAPIKey 按明文秘钥查询可用秘钥。
 func (s *Store) FindAPIKey(key string) (APIKey, error) {
-	return s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,
+	// 热路径缓存：/v1 每次调用都要查这把秘钥，内存命中省掉一次单连接库上的
+	// SELECT。秘钥的增删改都会整体作废缓存（操作频率极低，无一致性压力）。
+	s.keyCacheMu.RLock()
+	if k, ok := s.keyCache[key]; ok {
+		s.keyCacheMu.RUnlock()
+		return k, nil
+	}
+	s.keyCacheMu.RUnlock()
+	k, err := s.scanAPIKey(s.db.QueryRow(`SELECT id,name,key,models,enabled,expires_at,remark,created_at,last_used_at,
 		rpm,daily_quota,daily_tokens,0 FROM api_keys WHERE key=?`, key))
+	if err != nil {
+		return APIKey{}, err
+	}
+	s.keyCacheMu.Lock()
+	if s.keyCache == nil {
+		s.keyCache = make(map[string]APIKey)
+	}
+	s.keyCache[key] = k
+	s.keyCacheMu.Unlock()
+	return k, nil
+}
+
+// invalidateKeyCache 整体作废秘钥缓存（SaveAPIKey / DeleteAPIKey 后调用）。
+func (s *Store) invalidateKeyCache() {
+	s.keyCacheMu.Lock()
+	s.keyCache = make(map[string]APIKey)
+	s.keyCacheMu.Unlock()
 }
 
 // FindAPIKeyByID 按主键查询秘钥。
@@ -922,6 +1060,7 @@ func (s *Store) SaveAPIKey(k APIKey) (APIKey, error) {
 		}
 		k.ID, _ = res.LastInsertId()
 		k.CreatedAt = ts
+		s.invalidateKeyCache()
 		return k, nil
 	}
 	_, err := s.db.Exec(`UPDATE api_keys SET name=?,models=?,enabled=?,expires_at=?,remark=?,
@@ -931,6 +1070,7 @@ func (s *Store) SaveAPIKey(k APIKey) (APIKey, error) {
 	if err != nil {
 		return k, err
 	}
+	s.invalidateKeyCache()
 	return s.FindAPIKey(k.Key)
 }
 
@@ -942,11 +1082,22 @@ func (s *Store) DeleteAPIKey(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.invalidateKeyCache()
 	return nil
 }
 
+// TouchAPIKey 更新秘钥最近使用时间。节流：同一把秘钥 30 秒内不重复写库——
+// last_used_at 只需要分钟级展示精度，没必要每次调用都打一次写事务。
 func (s *Store) TouchAPIKey(key string) {
-	_, _ = s.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE key=?`, now(), key)
+	ts := time.Now()
+	s.touchMu.Lock()
+	if last, ok := s.touchAt[key]; ok && ts.Sub(last) < 30*time.Second {
+		s.touchMu.Unlock()
+		return
+	}
+	s.touchAt[key] = ts
+	s.touchMu.Unlock()
+	_, _ = s.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE key=?`, ts.Format(time.RFC3339), key)
 }
 
 // GenerateKey 生成 sk- 前缀的随机秘钥。

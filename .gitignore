@@ -118,3 +118,22 @@ relay.db
 # 交叉编译导出的镜像包
 *.tar
 # <<< happy-relay <<<
+
+# >>> opensource-cleanup >>>
+# 根目录的端到端截图与临时截图
+/e2e-*.png
+/shot-*.png
+# 根目录的临时与备份文件
+/meta.tmp.json
+*.exe~
+# 本地端到端 / 压测脚本
+/e2e-*.mjs
+/bench-*.mjs
+# 本地工作台记录与临时数据目录
+/.workbuddy/
+/data-temp/
+/data-test/
+# 内部交付说明（对外以 README 与 docs/API.md 为准）
+/DELIVERY.md
+/docs/DELIVERY.md
+# <<< opensource-cleanup <<<

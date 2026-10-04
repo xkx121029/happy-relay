@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -193,6 +195,11 @@ func (e *Engine) candidates(p store.Provider) []Upstream {
 		timeout = 10 * time.Minute
 	}
 	for _, b := range bases {
+		// 自引用防护：渠道地址指向本服务自身时必须跳过，否则调用会绕回自己
+		// 形成递归调用（表现为一批请求挂到超时才结束）。
+		if isSelfBaseURL(b) {
+			continue
+		}
 		for _, k := range keys {
 			out = append(out, Upstream{BaseURL: b, APIKey: k, Headers: p.Headers, Provider: p, Client: e.client, Timeout: timeout})
 		}
@@ -219,6 +226,52 @@ func (e *Engine) candidates(p store.Provider) []Upstream {
 // （那会绑定整个客户端、无法共享），而是随 Upstream.Timeout 走 request context。
 func (e *Engine) clientFor(p store.Provider) *http.Client {
 	return e.client
+}
+
+// selfAddrs 保存本服务可能的监听地址（host:port），用于识别自引用渠道。
+var selfAddrs atomic.Value // []string
+
+// SetSelfAddrs 登记本服务的监听地址；由 main 在启动时调用。
+func SetSelfAddrs(addr string) {
+	host, port := splitHostPort(addr)
+	if host == "" || port == "" {
+		return
+	}
+	selfAddrs.Store([]string{net.JoinHostPort(host, port), net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("localhost", port)})
+}
+
+// splitHostPort 兼容 ":9000"（host 为空，等价 0.0.0.0）这种写法。
+func splitHostPort(addr string) (host, port string) {
+	if strings.HasPrefix(addr, ":") {
+		return "0.0.0.0", strings.TrimPrefix(addr, ":")
+	}
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", ""
+	}
+	return h, p
+}
+
+// isSelfBaseURL 判断渠道入口是否指向本服务自身。
+func isSelfBaseURL(base string) bool {
+	list, _ := selfAddrs.Load().([]string)
+	if len(list) == 0 {
+		return false
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	hp := strings.ToLower(u.Host)
+	if hp == "" {
+		return false
+	}
+	for _, self := range list {
+		if hp == self {
+			return true
+		}
+	}
+	return false
 }
 
 // callCtx 给单次上游调用叠加全局兜底超时，语义与旧的 http.Client.Timeout 一致

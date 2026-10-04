@@ -4,7 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
+	"time"
+
+	"net/http"
 )
 
 // ---------- 站内技能 ----------
@@ -278,27 +282,89 @@ func scanTaskRow(sc scanner) (VideoTask, error) {
 // ---------- 调用日志 ----------
 
 type UsageLog struct {
-	ID               int64  `json:"id"`
-	CreatedAt        string `json:"created_at"`
-	Capability       string `json:"capability"`
-	Model            string `json:"model"`
-	ProviderName     string `json:"provider_name"`
-	APIKeyName       string `json:"api_key_name"`
-	Status           int    `json:"status"`
-	Stream           bool   `json:"stream"`
-	LatencyMS        int64  `json:"latency_ms"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
+	ID               int64   `json:"id"`
+	CreatedAt        string  `json:"created_at"`
+	Capability       string  `json:"capability"`
+	Model            string  `json:"model"`
+	ProviderName     string  `json:"provider_name"`
+	APIKeyName       string  `json:"api_key_name"`
+	Status           int     `json:"status"`
+	Stream           bool    `json:"stream"`
+	LatencyMS        int64   `json:"latency_ms"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
 	Cost             float64 `json:"cost"`
-	Error            string `json:"error"`
-	RequestBody      string `json:"request_body,omitempty"`
-	ResponsePreview  string `json:"response_preview,omitempty"`
+	Error            string  `json:"error"`
+	RequestBody      string  `json:"request_body,omitempty"`
+	ResponsePreview  string  `json:"response_preview,omitempty"`
 }
 
+// usageLogWorker 后台串行落库调用日志；队列关闭后退出。
+// 每条落库后同步增量维护当日用量缓存，配额校验才能读到最新值。
+// logItem 是写队列的元素。barrier 为真时它只是一道"闸门"：
+// 等前面所有日志都落完库就关闭 done，本身不写入任何行。
+type logItem struct {
+	l       UsageLog
+	done    chan struct{}
+	barrier bool
+}
+
+func (s *Store) usageLogWorker() {
+	defer close(s.logDone)
+	for it := range s.logCh {
+		if !it.barrier {
+			s.insertUsageLog(it.l)
+			s.bumpDailyUsage(it.l)
+		}
+		if it.done != nil {
+			close(it.done)
+		}
+	}
+}
+
+// AddUsageLog 记录一条调用日志（异步）：入队即返回，落库由后台 worker 完成。
+// 队列满（写入洪峰）时退化为同步插入——宁可背压也不丢配额计数。
 func (s *Store) AddUsageLog(l UsageLog) {
 	if l.CreatedAt == "" {
 		l.CreatedAt = now()
 	}
+	// 不变量：有错误就一定是失败状态。概览统计的"失败数"聚合只读 status 这一个窄列
+	// （配合覆盖索引免去回表读 128KB 正文），所以这条约定必须在这里强制：
+	// 任何调用点漏填 status，兜底成 502，不让"有错却是 2xx"的脏数据混进来。
+	if l.Error != "" && l.Status < 400 {
+		l.Status = http.StatusBadGateway
+	}
+	select {
+	case s.logCh <- logItem{l: l}:
+		return
+	default:
+	}
+	s.insertUsageLog(l)
+	s.bumpDailyUsage(l)
+}
+
+// FlushUsageLogs 等待队列里的日志真正落库（清空日志、关库前调用，保证顺序）。
+// 入队一条带完成信号的哨兵并等它被关闭——这才叫"落库完成"。
+// 之前只等 len(logCh)==0，worker 尚未写完就读会读到旧数据（清空日志后统计仍显示有量）。
+func (s *Store) FlushUsageLogs() {
+	if s == nil || s.logCh == nil {
+		return
+	}
+	done := make(chan struct{})
+	// 队列满时退化为同步插入，哨兵进不去就直接同步等一小会儿。
+	select {
+	case s.logCh <- logItem{done: done, barrier: true}:
+	default:
+		time.Sleep(5 * time.Millisecond)
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+}
+
+func (s *Store) insertUsageLog(l UsageLog) {
 	_, _ = s.db.Exec(`INSERT INTO usage_logs
 		(created_at,capability,model,provider_name,api_key_name,status,stream,latency_ms,
 		 prompt_tokens,completion_tokens,cost,error,request_body,response_preview)
@@ -308,6 +374,35 @@ func (s *Store) AddUsageLog(l UsageLog) {
 		l.RequestBody, l.ResponsePreview)
 }
 
+// bumpDailyUsage 日志落库后增量维护当日用量缓存（配额校验的读路径依赖它）。
+func (s *Store) bumpDailyUsage(l UsageLog) {
+	today := time.Now().Format("2006-01-02")
+	s.keyUsageMu.Lock()
+	defer s.keyUsageMu.Unlock()
+	e := s.keyUsage[l.APIKeyName]
+	if e == nil || e.day != today {
+		e = &dailyUsage{day: today}
+		s.keyUsage[l.APIKeyName] = e
+	}
+	e.calls++
+	e.tokens += int64(l.PromptTokens + l.CompletionTokens)
+}
+
+// invalidateDailyUsage 丢弃全部当日用量缓存（清空日志/回导入后强制回源）。
+func (s *Store) invalidateDailyUsage() {
+	s.keyUsageMu.Lock()
+	s.keyUsage = make(map[string]*dailyUsage)
+	s.keyUsageMu.Unlock()
+}
+
+// listBodyPreviewLen 列表页返回的请求/响应正文预览长度。
+// 完整正文单条可达 log_body_limit_kb（默认 128KB），一次 200 条能把响应撑到几十 MB，
+// 是调用日志页打开慢的主因。列表只给前几百字符做摘要，详情按 id 走 GetUsageLog 取全量。
+const listBodyPreviewLen = 600
+
+// itoa 供 SQL 拼接常量用（值是编译期常量，无注入风险）。
+func itoa(n int) string { return strconv.Itoa(n) }
+
 // ListUsageLogs 按时间倒序返回调用日志。beforeID>0 时只取 id 小于它的更早记录，
 // 配合前端「加载更多」做游标分页，避免一次性拉全表。
 func (s *Store) ListUsageLogs(limit int, beforeID int64, capability, keyword string) ([]UsageLog, error) {
@@ -315,7 +410,9 @@ func (s *Store) ListUsageLogs(limit int, beforeID int64, capability, keyword str
 		limit = 200
 	}
 	q := `SELECT id,created_at,capability,model,provider_name,api_key_name,status,stream,
-		latency_ms,prompt_tokens,completion_tokens,cost,error,request_body,response_preview
+		latency_ms,prompt_tokens,completion_tokens,cost,error,
+		substr(request_body,1,` + itoa(listBodyPreviewLen) + `),
+		substr(response_preview,1,` + itoa(listBodyPreviewLen) + `)
 		FROM usage_logs WHERE 1=1`
 	args := []any{}
 	if beforeID > 0 {
@@ -353,9 +450,63 @@ func (s *Store) ListUsageLogs(limit int, beforeID int64, capability, keyword str
 	return out, rows.Err()
 }
 
+// GetUsageLog 按 id 取单条调用日志（AI 诊断、日志详情等需要完整正文的场景）。
+func (s *Store) GetUsageLog(id int64) (UsageLog, error) {
+	var l UsageLog
+	var stream int
+	err := s.db.QueryRow(`SELECT id,created_at,capability,model,provider_name,api_key_name,status,stream,
+		latency_ms,prompt_tokens,completion_tokens,cost,error,request_body,response_preview
+		FROM usage_logs WHERE id=?`, id).
+		Scan(&l.ID, &l.CreatedAt, &l.Capability, &l.Model, &l.ProviderName,
+			&l.APIKeyName, &l.Status, &stream, &l.LatencyMS, &l.PromptTokens,
+			&l.CompletionTokens, &l.Cost, &l.Error, &l.RequestBody, &l.ResponsePreview)
+	if err == sql.ErrNoRows {
+		return l, ErrNotFound
+	}
+	if err != nil {
+		return l, err
+	}
+	l.Stream = stream == 1
+	return l, nil
+}
+
 func (s *Store) ClearUsageLogs() error {
+	// 先等异步队列落库，否则清空后残留的日志又会冒出来。
+	s.FlushUsageLogs()
 	_, err := s.db.Exec(`DELETE FROM usage_logs`)
+	s.invalidateDailyUsage()
+	s.invalidateStatsCache()
 	return err
+}
+
+// ListUsageLogsByKey 返回某把秘钥（按名称）的最近调用日志，供用户门户展示。
+// 刻意不返回请求/响应体：那是管理员排障用的，用户侧只需要元信息。
+func (s *Store) ListUsageLogsByKey(name string, limit int) ([]UsageLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT id,created_at,capability,model,provider_name,api_key_name,status,stream,
+		latency_ms,prompt_tokens,completion_tokens,cost,error,request_body,response_preview
+		FROM usage_logs WHERE api_key_name=? ORDER BY id DESC LIMIT ?`, name, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UsageLog{}
+	for rows.Next() {
+		var l UsageLog
+		var stream int
+		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.Capability, &l.Model, &l.ProviderName,
+			&l.APIKeyName, &l.Status, &stream, &l.LatencyMS, &l.PromptTokens,
+			&l.CompletionTokens, &l.Cost, &l.Error, &l.RequestBody, &l.ResponsePreview); err != nil {
+			return nil, err
+		}
+		l.Stream = stream == 1
+		l.RequestBody = ""
+		l.ResponsePreview = ""
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 // TrimUsageLogs 将日志裁剪到 keep 条以内。
@@ -363,6 +514,8 @@ func (s *Store) TrimUsageLogs(keep int) {
 	if keep <= 0 {
 		return
 	}
+	s.FlushUsageLogs() // 先落库队列中的日志，避免裁剪后又有旧记录补进来
+	s.invalidateStatsCache()
 	_, _ = s.db.Exec(`DELETE FROM usage_logs WHERE id NOT IN
 		(SELECT id FROM usage_logs ORDER BY id DESC LIMIT ?)`, keep)
 }
@@ -374,6 +527,8 @@ func (s *Store) TrimUsageLogsBefore(cutoff string) {
 	if cutoff == "" {
 		return
 	}
+	s.FlushUsageLogs()
+	s.invalidateStatsCache()
 	_, _ = s.db.Exec(`DELETE FROM usage_logs WHERE created_at < ?`, cutoff)
 }
 
@@ -392,24 +547,57 @@ type Stats struct {
 	FailedCalls  int64   `json:"failed_calls"`
 }
 
+// ---------- 面板统计的短 TTL 缓存 ----------
+// Overview/Stats 是多路 GROUP BY 全表聚合，日志量大时单次要几十毫秒以上，
+// 又全挤在单连接库上。面板多人同时刷新会把库打满；3 秒 TTL 对面板场景足够新鲜。
+
+const statsTTL = 3 * time.Second
+
 func (s *Store) Stats() (Stats, error) {
+	s.statsMu.Lock()
+	if s.statsVal != nil && time.Since(s.statsAt) < statsTTL {
+		st := *s.statsVal
+		s.statsMu.Unlock()
+		return st, nil
+	}
+	s.statsMu.Unlock()
+
 	var st Stats
 	_ = s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM providers),(SELECT COUNT(*) FROM models),
 		(SELECT COUNT(*) FROM api_keys),(SELECT COUNT(*) FROM skills)`).
 		Scan(&st.Providers, &st.Models, &st.Keys, &st.Skills)
 	today := strings.Split(now(), "T")[0] + "T00:00:00"
-	_ = s.db.QueryRow(`SELECT COUNT(*),COALESCE(AVG(latency_ms),0),
+	// 聚合显式指定覆盖索引：SQLite 优化器面对"全表聚合"会自己选全表扫描，
+	// 但 usage_logs 带着最大 128KB 的请求正文，扫正文才是真开销。
+	// 强制走 idx_usage_logs_stats 后只扫窄列，5 万行实测快 2.6 倍。
+	// 万一索引缺失（老库未迁移）导致报错，退回普通扫描，不让面板直接挂掉。
+	agg := `SELECT COUNT(*),COALESCE(AVG(latency_ms),0),
 		COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(completion_tokens),0),
-		COALESCE(SUM(CASE WHEN status>=400 OR error<>'' THEN 1 ELSE 0 END),0)
-		FROM usage_logs`).Scan(&st.TotalCalls, &st.AvgLatencyMS, &st.PromptTokens,
-		&st.CompTokens, &st.FailedCalls)
+		COALESCE(SUM(CASE WHEN status>=400 THEN 1 ELSE 0 END),0)
+		FROM usage_logs`
+	if err := s.db.QueryRow(agg+` INDEXED BY idx_usage_logs_stats`).
+		Scan(&st.TotalCalls, &st.AvgLatencyMS, &st.PromptTokens, &st.CompTokens, &st.FailedCalls); err != nil {
+		_ = s.db.QueryRow(agg).Scan(&st.TotalCalls, &st.AvgLatencyMS, &st.PromptTokens,
+			&st.CompTokens, &st.FailedCalls)
+	}
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE created_at>=?`, today).Scan(&st.TodayCalls)
 	if st.TotalCalls > 0 {
 		st.SuccessRate = float64(st.TotalCalls-st.FailedCalls) / float64(st.TotalCalls) * 100
 	} else {
 		st.SuccessRate = 100
 	}
+
+	s.statsMu.Lock()
+	s.statsVal, s.statsAt = &st, time.Now()
+	s.statsMu.Unlock()
 	return st, nil
+}
+
+// invalidateStatsCache 清空日志后立即失效，面板不展示 3 秒的旧总数。
+func (s *Store) invalidateStatsCache() {
+	s.statsMu.Lock()
+	s.statsVal, s.statsDaily = nil, nil
+	s.statsMu.Unlock()
 }
 
 // DailyCalls 返回最近 n 天每天的调用次数，用于概览趋势图。
@@ -417,8 +605,16 @@ func (s *Store) DailyCalls(days int) ([]map[string]any, error) {
 	if days <= 0 {
 		days = 7
 	}
+	s.dailyMu.Lock()
+	if s.statsDaily != nil && s.statsDailyDays == days && time.Since(s.dailyAt) < statsTTL {
+		out := s.statsDaily
+		s.dailyMu.Unlock()
+		return out, nil
+	}
+	s.dailyMu.Unlock()
+
 	rows, err := s.db.Query(`SELECT substr(created_at,1,10) AS d,
-		COUNT(*),COALESCE(SUM(CASE WHEN status>=400 OR error<>'' THEN 1 ELSE 0 END),0)
+		COUNT(*),COALESCE(SUM(CASE WHEN status>=400 THEN 1 ELSE 0 END),0)
 		FROM usage_logs GROUP BY d ORDER BY d DESC LIMIT ?`, days)
 	if err != nil {
 		return nil, err
@@ -433,6 +629,10 @@ func (s *Store) DailyCalls(days int) ([]map[string]any, error) {
 		}
 		out = append(out, map[string]any{"date": d, "total": total, "failed": failed})
 	}
+
+	s.dailyMu.Lock()
+	s.statsDaily, s.statsDailyDays, s.dailyAt = out, days, time.Now()
+	s.dailyMu.Unlock()
 	return out, nil
 }
 

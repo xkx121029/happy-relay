@@ -149,6 +149,7 @@ func (s *Store) SaveCatalogModel(m CatalogModel) (CatalogModel, error) {
 			marshal(CleanModalities(m.OutputModalities)), ts, ts); err != nil {
 			return m, err
 		}
+		s.bumpGen() // 写操作后让模型/目录读缓存失效
 		return s.getCatalogByKey(m.ProviderID, m.ModelID)
 	}
 	if _, err := s.db.Exec(`UPDATE catalog_models SET provider_id=?,model_id=?,capability=?,
@@ -158,12 +159,22 @@ func (s *Store) SaveCatalogModel(m CatalogModel) (CatalogModel, error) {
 		marshal(CleanModalities(m.OutputModalities)), ts, m.ID); err != nil {
 		return m, err
 	}
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return s.GetCatalogModel(m.ID)
 }
 
 // catalogContextIndex 构建 (渠道, 上游模型名) → 上下文长度 的索引，
 // 用于一次性补全模型列表，避免逐条查询。
 func (s *Store) catalogContextIndex() map[string]int {
+	gen := s.gen.Load()
+	s.catalogMu.Lock()
+	if s.catalogIndex != nil && s.catalogGen == gen {
+		idx := s.catalogIndex
+		s.catalogMu.Unlock()
+		return idx
+	}
+	s.catalogMu.Unlock()
+
 	rows, err := s.db.Query(`SELECT provider_id,model_id,context_length FROM catalog_models WHERE context_length>0`)
 	if err != nil {
 		return nil
@@ -179,6 +190,14 @@ func (s *Store) catalogContextIndex() map[string]int {
 		}
 		out[catalogKey(providerID, modelID)] = n
 	}
+
+	s.catalogMu.Lock()
+	// 只有当期间没有新的写操作才落缓存；否则这次结果是旧的，丢弃让下次重算。
+	if s.gen.Load() == gen {
+		s.catalogIndex = out
+		s.catalogGen = gen
+	}
+	s.catalogMu.Unlock()
 	return out
 }
 
@@ -209,6 +228,7 @@ func (s *Store) DeleteCatalogModel(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.bumpGen() // 写操作后让模型/目录读缓存失效
 	return nil
 }
 

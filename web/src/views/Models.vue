@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import BatchBar from '../components/BatchBar.vue'
+import { useBatch } from '../batch'
 import Modal from '../components/Modal.vue'
 import TemplateEditor from '../components/TemplateEditor.vue'
 import {
@@ -142,6 +144,13 @@ const shownModels = computed(() => {
   if (usableFilter.value === 'unusable') return models.value.filter((m) => m.usable === false)
   return models.value.filter((m) => m.usable !== false)
 })
+
+// ---------- 批量操作（选择范围跟随当前筛选视图） ----------
+const bat = useBatch(
+  () => shownModels.value.map((m: Model) => m.id),
+  (ids, action) => api.batchModels(ids, action),
+  load,
+)
 
 onMounted(load)
 
@@ -764,9 +773,11 @@ async function runBenchAll() {
     </div>
 
     <div v-else-if="shownModels.length" class="table-wrap">
+      <BatchBar :count="bat.selCount.value" :busy="bat.batchBusy.value" @act="bat.batch" @clear="bat.clearSel" />
       <table class="table">
         <thead>
           <tr>
+            <th style="width: 34px"><input type="checkbox" class="row-check" :checked="bat.allSelected.value" :indeterminate="bat.someSelected.value" @change="bat.toggleAll" /></th>
             <th>对外模型名</th>
             <th>能力</th>
             <th>档位</th>
@@ -777,6 +788,7 @@ async function runBenchAll() {
         </thead>
         <tbody>
           <tr v-for="m in shownModels" :key="m.id">
+            <td><input type="checkbox" class="row-check" :checked="bat.sel.value.has(m.id)" @change="bat.toggleSel(m.id)" /></td>
             <td>
               <div class="mono" style="font-weight: 600">{{ m.name }}</div>
               <div v-if="m.remark" class="muted" style="font-size: 11.5px">{{ m.remark }}</div>

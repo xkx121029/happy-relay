@@ -11,7 +11,8 @@ const (
 	// smoothChunkRunes 是平滑输出时每段的字符数，越小越细腻。
 	smoothChunkRunes = 4
 	// maxSmoothLag 是允许的最大积压时长；超过则放弃限速直接下发，避免拖慢整体响应。
-	maxSmoothLag = 1200 * time.Millisecond
+	// 600ms：积压多半秒就意味着模型实际速度远超设定速率，限速已无意义。
+	maxSmoothLag = 600 * time.Millisecond
 )
 
 // smoothEmit 把上游一次吐出的长文本拆成小段，按目标速率匀速下发，

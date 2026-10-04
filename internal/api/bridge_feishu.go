@@ -199,9 +199,9 @@ type feishuTurn struct {
 var (
 	feishuHistMu   sync.Mutex
 	feishuHist     = map[string][]feishuTurn{}
-	feishuHistCap  = 40              // 每会话最多保留的消息条数（含双方）
+	feishuHistCap  = 40 // 每会话最多保留的消息条数（含双方）
 	feishuHistTTL  = 30 * time.Minute
-	feishuHistMaps = 256             // 会话数上限，超出时清理过期会话
+	feishuHistMaps = 256 // 会话数上限，超出时清理过期会话
 )
 
 // feishuHistoryTurns 读取面板配置的上下文轮数（条数 = 轮数×2，0=关闭）。
@@ -319,15 +319,12 @@ func (s *Server) feishuGenerateReply(text, chatID, chatType string) string {
 		if systemModel == "" {
 			return "尚未设置系统级 AI：请先在面板「设置 → 通用 → 系统级 AI 模型」里选择一个模型。"
 		}
-		m, ps, err := s.eng.ResolveAll(systemModel)
-		if err != nil {
-			return "系统级 AI 不可用：" + err.Error()
-		}
+		// 不预检主模型可用性：agentCore 内的自愈层会在失败时自动切换备用模型。
 		history := make([]relay.ChatMessage, 0, len(hist)+2)
 		history = append(history, relay.ChatMessage{Role: "system", Content: agentSystemPrompt(s.agentFullAccess())})
 		history = append(history, hist...)
 		history = append(history, relay.ChatMessage{Role: "user", Content: text + ctxNote})
-		resp, loopErr := s.agentCore(context.Background(), systemModel, m, ps, history, nil)
+		resp, loopErr := s.agentCore(context.Background(), systemModel, history, nil)
 		if loopErr != nil {
 			return loopErr.Error()
 		}
@@ -523,10 +520,10 @@ func (s *Server) feishuSendText(chatID, text string) error {
 // ---------- 事件去重 ----------
 
 var (
-	feishuEventMu    sync.Mutex
-	feishuEventSeen  = map[string]time.Time{}
-	feishuEventTTL   = 6 * time.Hour
-	feishuEventMaxN  = 4096
+	feishuEventMu   sync.Mutex
+	feishuEventSeen = map[string]time.Time{}
+	feishuEventTTL  = 6 * time.Hour
+	feishuEventMaxN = 4096
 )
 
 // feishuSeenEvent 返回 true 表示首次见到该事件（应处理）；重复推回 false。

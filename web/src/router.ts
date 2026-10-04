@@ -14,6 +14,7 @@ const routes = [
   { path: '/connector', name: 'connector', component: () => import('./views/Connector.vue') },
   { path: '/logs', name: 'logs', component: () => import('./views/Logs.vue') },
   { path: '/settings', name: 'settings', component: () => import('./views/Settings.vue') },
+  { path: '/user', name: 'user', component: () => import('./views/User.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

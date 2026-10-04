@@ -91,6 +91,55 @@
   /* 统一的间距节奏 */
   --gap: 16px;
   --pad: 16px;
+
+  /* ============================================================
+     设计系统 v2：全站唯一样式来源
+     间距 / 圆角 / Elevation / 品牌渐变 / 染色卡 / 版心，
+     各视图不再自造圆角与阴影，统一引用这里的令牌。
+     ============================================================ */
+
+  /* 间距刻度（4 的倍数，保证纵向节奏一致） */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s7: 32px;
+  --s8: 40px;
+  --s9: 56px;
+
+  /* 圆角刻度 */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* Elevation：卡片/浮层/弹窗三级阴影 */
+  --e1: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --e2: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --e3: 0 20px 56px rgba(0, 0, 0, 0.42);
+
+  /* 品牌渐变：主按钮、徽章、Logo、强调数字统一用它，避免各写各的 */
+  --brand-grad: linear-gradient(120deg, hsl(224 94% 60%), hsl(266 90% 63%) 52%, hsl(318 90% 60%));
+  --brand-grad-cool: linear-gradient(120deg, hsl(224 94% 60%), hsl(258 90% 62%) 55%, hsl(190 92% 52%));
+  --brand-text: hsl(217 100% 74%);
+
+  /* 染色卡：任意色相卡片共用的三件套（底/边/影） */
+  --tint-bg: 0.16;
+  --tint-border: 0.34;
+
+  /* 版心与区块节奏 */
+  --container: 1120px;
+  --section-gap: var(--s9);
+
+  /* 旧令牌别名到新体系：历史视图（面板/设置/日志/智能体…）不改一行代码
+     也能拿到同一套圆角与阴影，这是"统一风格"最省事也最彻底的落地方式。 */
+  --radius: var(--r);
+  --radius-sm: var(--r-sm);
+  --radius-xs: var(--r-xs);
 }
 
 * {
@@ -567,14 +616,15 @@ table.table td {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 62%, var(--accent-2)));
+  background: var(--brand-grad);
   border-color: transparent;
   color: #fff;
   font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--accent-hover), color-mix(in srgb, var(--accent-hover) 62%, var(--accent-2)));
+  background: var(--brand-grad);
   border-color: transparent;
+  filter: saturate(1.12) brightness(1.05);
   box-shadow: var(--glow);
 }
 .btn-primary:active:not(:disabled) {
@@ -2215,6 +2265,17 @@ details.expander[open] summary {
   --warn-dim: rgba(154, 107, 10, 0.1);
   --danger: #cf4a42;
   --danger-dim: rgba(207, 74, 66, 0.1);
+
+  /* 浅色下的阴影要更轻更散，否则整版发灰 */
+  --e1: 0 1px 2px rgba(23, 28, 45, 0.06);
+  --e2: 0 8px 24px rgba(23, 28, 45, 0.09);
+  --e3: 0 20px 48px rgba(23, 28, 45, 0.14);
+  /* 浅底上饱和色要压暗一档，否则刺眼且文字发虚 */
+  --brand-grad: linear-gradient(120deg, hsl(224 88% 52%), hsl(266 84% 54%) 52%, hsl(318 82% 50%));
+  --brand-grad-cool: linear-gradient(120deg, hsl(224 88% 52%), hsl(258 84% 54%) 55%, hsl(190 88% 40%));
+  --brand-text: hsl(222 84% 46%);
+  --tint-bg: 0.12;
+  --tint-border: 0.3;
 }
 
 :root[data-theme='light'] .topbar {
@@ -2490,4 +2551,106 @@ details.expander[open] summary {
 :root[data-theme='light'] .fw-err {
   background: rgba(207, 74, 66, 0.07);
   color: #b3382f;
+}
+
+/* ---------- 批量操作工具条（模型/渠道/秘钥列表共用） ---------- */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  border-radius: var(--radius);
+  animation: bb-in 0.15s ease;
+}
+@keyframes bb-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+.bb-count {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.bb-count b {
+  color: var(--accent-text);
+}
+.bb-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+.bb-danger {
+  color: var(--danger);
+}
+.bb-danger:hover {
+  border-color: var(--danger);
+}
+/* 表格里的选择框 */
+.row-check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ---------- AI 诊断（调用日志详情弹窗） / AI 解读（自检） ---------- */
+.diag-md {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-dim);
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+.diag-md p {
+  margin: 0 0 6px;
+}
+.diag-md p:last-child {
+  margin-bottom: 0;
+}
+.diag-md strong {
+  color: var(--text);
+}
+.diag-md code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent-text);
+}
+.diag-md ul,
+.diag-md ol {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+.diag-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: diag-spin 0.8s linear infinite;
+  vertical-align: -1px;
+  margin-right: 6px;
+}
+@keyframes diag-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

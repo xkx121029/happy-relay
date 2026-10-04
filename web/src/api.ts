@@ -622,6 +622,9 @@ export const api = {
   saveProvider: (p: Partial<Provider>) =>
     p.id ? put<Provider>(`/api/providers/${p.id}`, p) : post<Provider>('/api/providers', p),
   deleteProvider: (id: number) => del<{ ok: boolean }>(`/api/providers/${id}`),
+  /** 批量操作（ids + enable/disable/delete），三个列表页共用 */
+  batchProviders: (ids: number[], action: 'enable' | 'disable' | 'delete') =>
+    post<{ ok: boolean; affected: number; failed?: number[] }>('/api/providers/batch', { ids, action }),
   testProvider: (payload: { id?: number; kind?: string; base_url?: string; api_key?: string; no_version_path?: boolean }) =>
     post<{ results: ProbeResult[] }>('/api/providers/test', payload),
 
@@ -648,6 +651,8 @@ export const api = {
   benchmarkModel: (model: string) =>
     post<BenchResult>('/api/models/benchmark', { model }),
   deleteModel: (id: number) => del<{ ok: boolean }>(`/api/models/${id}`),
+  batchModels: (ids: number[], action: 'enable' | 'disable' | 'delete') =>
+    post<{ ok: boolean; affected: number; failed?: number[] }>('/api/models/batch', { ids, action }),
 
   // 模型库
   listCatalog: (params: { provider_id?: number; capability?: string } = {}) => {
@@ -667,6 +672,8 @@ export const api = {
   saveKey: (k: Partial<APIKey>) =>
     k.id ? put<APIKey>(`/api/keys/${k.id}`, k) : post<APIKey>('/api/keys', k),
   deleteKey: (id: number) => del<{ ok: boolean }>(`/api/keys/${id}`),
+  batchKeys: (ids: number[], action: 'enable' | 'disable' | 'delete') =>
+    post<{ ok: boolean; affected: number; failed?: number[] }>('/api/keys/batch', { ids, action }),
 
   // 技能
   listSkills: () => request<Skill[]>('/api/skills'),
@@ -710,6 +717,13 @@ export const api = {
   },
   clearLogs: () => del<{ ok: boolean }>('/api/logs'),
 
+  /** 单条日志完整正文（列表只带 600 字符预览，详情按需取全量） */
+  getLog: (id: number) => request<UsageLog>(`/api/logs/${id}`),
+
+  /** AI 诊断一条调用日志（主模型撰写 markdown，服务端缓存；refresh 强制重写） */
+  diagnoseLog: (id: number, refresh = false) =>
+    post<{ diagnosis: string; cached: boolean }>('/api/logs/diagnose', { id, refresh }),
+
   // 首次引导
   getSetup: () => request<SetupStatus>('/api/setup'),
   saveSetup: (body: { api_key?: string; create_access_key?: boolean; access_key_name?: string }) =>
@@ -719,9 +733,17 @@ export const api = {
   getSettings: () => request<Record<string, string>>('/api/settings'),
   saveSettings: (payload: Record<string, string>) =>
     post<Record<string, string>>('/api/settings', payload),
+  /** 穿透对外链接连通性校验：服务端真实请求 {url}/healthz */
+  checkPublicUrl: (url = '') =>
+    post<{ ok: boolean; url: string; status?: number; latency_ms?: number; error?: string }>(
+      '/api/settings/public-url-check',
+      { url },
+    ),
 
   // 无人值守：自检 / 巡检历史 / 通知测试
   selfCheck: () => request<SelfCheck>('/api/selfcheck'),
+  /** 主模型解读自检结果（markdown 行动建议） */
+  interpretSelfCheck: () => post<{ interpretation: string }>('/api/selfcheck/interpret'),
   healthHistory: (params: { provider_id?: number; limit?: number; hours?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.provider_id) q.set('provider_id', String(params.provider_id))
@@ -757,6 +779,66 @@ export const api = {
       report_weekday: string
       report_hour: string
     }>('/api/bridge/feishu/status'),
+
+  // ---------- 用户门户：凭对外秘钥认证 ----------
+  /** 门户公开信息：无需秘钥，只用于未登录主页展示（不含任何可调用能力与敏感数据） */
+  userPublic: () =>
+    request<{
+      service: string
+      notice: string
+      total_models: number
+      capabilities: { capability: string; count: number }[]
+      chat_endpoint: string
+      image_endpoint: string
+      base_path: string
+      docs: string
+    }>('/api/user/public'),
+  userMe: (key: string) =>
+    request<{
+      name: string
+      models: string[]
+      enabled: boolean
+      expires_at: string
+      remark: string
+      rpm: number
+      daily_quota: number
+      daily_tokens: number
+      today_calls: number
+      today_tokens: number
+      last_used_at: string
+    }>('/api/user/me', { headers: { Authorization: 'Bearer ' + key } }),
+
+  userModels: (key: string) =>
+    request<{ name: string; capability: string; upstreams: number; remark: string }[]>('/api/user/models', {
+      headers: { Authorization: 'Bearer ' + key },
+    }),
+
+  userLogs: (key: string, limit = 50) =>
+    request<{ logs: UsageLog[]; ok: number; fail: number }>('/api/user/logs?limit=' + limit, {
+      headers: { Authorization: 'Bearer ' + key },
+    }),
+
+  /** 模型介绍（主模型撰写的 markdown，服务端缓存）；refresh=true 强制重写 */
+  userModelIntro: (key: string, name: string, refresh = false) =>
+    request<{ intro: string; cached: boolean }>(
+      '/api/user/model-intro?name=' + encodeURIComponent(name) + (refresh ? '&refresh=1' : ''),
+      { method: refresh ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + key } },
+    ),
+
+  /** 门户侧边栏自定义外链 + 公告（外链无需秘钥；notice 为 markdown，空串表示未配置） */
+  portalLinks: () => request<{ links: { name: string; url: string }[]; notice: string }>('/api/portal/links'),
+
+  /** 门户可视化编辑保存：notice（公告 markdown）与 links（门户可见外链）可任选其一或同时提交 */
+  portalSave: (content: { notice?: string; links?: { name: string; url: string }[] }) =>
+    post<{ ok: boolean }>('/api/portal/links', content),
+
+  /** 手动覆盖某模型的介绍（markdown）；与 AI 重写共用同一端点，带 intro 字段即覆盖 */
+  userModelIntroSave: (key: string, name: string, intro: string) =>
+    request<{ intro: string; cached: boolean }>('/api/user/model-intro?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + key },
+      body: JSON.stringify({ intro }),
+    }),
 
   // 调试台
   playgroundChat: (body: any) => post<any>('/api/playground/chat', body),
@@ -878,8 +960,13 @@ export async function streamChat(
 export interface AgentStreamHandlers {
   // 每完成一步工具（查/改/删）调用一次，step 与历史工具轨迹结构一致。
   onStep?: (step: { action: string; ok: boolean; summary?: string; error?: string }) => void
-  // 最终回复（可能附带模型在 settings 字段里已热生效的设置变更）。
-  onReply?: (r: { reply: string; system_model: string; latency_ms: number }) => void
+  // 最终回复（可能附带模型在 settings 字段里已热生效的设置变更；ask 为交互引导卡：秘钥输入/选项勾选）。
+  onReply?: (r: {
+    reply: string
+    system_model: string
+    latency_ms: number
+    ask?: { kind: string; label?: string; options?: string[]; multi?: boolean; placeholder?: string }
+  }) => void
   onError?: (message: string) => void
   onDone?: () => void
 }
@@ -944,7 +1031,12 @@ export async function streamAgentChat(
         if (chunk.type === 'step' && chunk.step) {
           handlers.onStep?.(chunk.step)
         } else if (chunk.type === 'reply') {
-          handlers.onReply?.({ reply: chunk.reply, system_model: chunk.system_model, latency_ms: chunk.latency_ms })
+          handlers.onReply?.({
+            reply: chunk.reply,
+            system_model: chunk.system_model,
+            latency_ms: chunk.latency_ms,
+            ask: chunk.ask,
+          })
         } else if (chunk.type === 'error') {
           handlers.onError?.(chunk.message || '智能体执行失败')
         }

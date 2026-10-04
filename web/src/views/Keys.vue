@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import BatchBar from '../components/BatchBar.vue'
+import { useBatch } from '../batch'
 import Modal from '../components/Modal.vue'
 import { api, type APIKey } from '../api'
 import { confirmDialog, models, toast } from '../store'
@@ -9,6 +11,13 @@ const list = ref<APIKey[]>([])
 const loading = ref(true)
 const editing = ref(false)
 const saving = ref(false)
+
+// ---------- 批量操作 ----------
+const bat = useBatch(
+  () => list.value.map((k) => k.id),
+  (ids, action) => api.batchKeys(ids, action),
+  load,
+)
 
 function blank() {
   return {
@@ -145,16 +154,18 @@ function expired(k: APIKey) {
       <table class="table">
         <tbody>
           <tr v-for="i in 4" :key="i">
-            <td v-for="j in 7" :key="j"><div class="skeleton" /></td>
+            <td v-for="j in 8" :key="j"><div class="skeleton" /></td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <div v-else-if="list.length" class="table-wrap">
+      <BatchBar :count="bat.selCount.value" :busy="bat.batchBusy.value" @act="bat.batch" @clear="bat.clearSel" />
       <table class="table">
         <thead>
           <tr>
+            <th style="width: 34px"><input type="checkbox" class="row-check" :checked="bat.allSelected.value" :indeterminate="bat.someSelected.value" @change="bat.toggleAll" /></th>
             <th>名称</th>
             <th>秘钥</th>
             <th>可用模型</th>
@@ -166,6 +177,7 @@ function expired(k: APIKey) {
         </thead>
         <tbody>
           <tr v-for="k in list" :key="k.id">
+            <td><input type="checkbox" class="row-check" :checked="bat.sel.value.has(k.id)" @change="bat.toggleSel(k.id)" /></td>
             <td>
               <div style="font-weight: 600">{{ k.name }}</div>
               <div v-if="k.remark" class="muted" style="font-size: 11.5px">{{ k.remark }}</div>

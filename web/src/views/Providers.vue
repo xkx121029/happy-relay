@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import BatchBar from '../components/BatchBar.vue'
+import { useBatch } from '../batch'
 import Modal from '../components/Modal.vue'
 import { api, type ProbeModel, type ProbeResult, type Provider, type ProviderHealth } from '../api'
 import { confirmDialog, providers, state, toast } from '../store'
@@ -11,6 +13,13 @@ const saving = ref(false)
 const testing = ref(false)
 const importing = ref(false)
 const health = ref<Record<number, ProviderHealth>>({})
+
+// ---------- 批量操作 ----------
+const bat = useBatch(
+  () => providers.value.map((p: Provider) => p.id),
+  (ids, action) => api.batchProviders(ids, action),
+  load,
+)
 
 const probeOpen = ref(false)
 const probeTitle = ref('')
@@ -338,9 +347,11 @@ function capBadge(capability: string) {
     </div>
 
     <div v-else-if="providers.length" class="table-wrap">
+      <BatchBar :count="bat.selCount.value" :busy="bat.batchBusy.value" @act="bat.batch" @clear="bat.clearSel" />
       <table class="table">
         <thead>
           <tr>
+            <th style="width: 34px"><input type="checkbox" class="row-check" :checked="bat.allSelected.value" :indeterminate="bat.someSelected.value" @change="bat.toggleAll" /></th>
             <th>名称</th>
             <th>类型</th>
             <th>入口 / 密钥</th>
@@ -353,6 +364,7 @@ function capBadge(capability: string) {
         </thead>
         <tbody>
           <tr v-for="p in providers" :key="p.id">
+            <td><input type="checkbox" class="row-check" :checked="bat.sel.value.has(p.id)" @change="bat.toggleSel(p.id)" /></td>
             <td>
               <div style="font-weight: 600">{{ p.name }}</div>
               <div v-if="p.remark" class="muted clamp-1" style="font-size: 11.5px; max-width: 220px">

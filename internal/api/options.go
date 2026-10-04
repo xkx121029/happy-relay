@@ -14,15 +14,17 @@ const (
 	SettingPanelTitle  = "panel_title"  // 面板标题
 	SettingSystemModel = "system_model" // 系统级 AI 使用的对外模型名
 
+	SettingPortalNotice = "portal_notice" // 用户门户公告（markdown，显示在欢迎区）
+
 	SettingAgentFullAccess = "agent_full_access" // on/off：Agent 最大权限（删除/清空类免 confirm，直接执行）
 
-	SettingMaxLogRows   = "max_log_rows"   // 调用日志保留条数上限
-	SettingLogBody      = "log_body"       // on/off：是否把请求与响应体落库
+	SettingMaxLogRows   = "max_log_rows"      // 调用日志保留条数上限
+	SettingLogBody      = "log_body"          // on/off：是否把请求与响应体落库
 	SettingLogBodyLimit = "log_body_limit_kb" // 单条日志请求/响应体的记录上限（KB），超出截断
-	SettingStreamSmooth = "stream_smooth"  // on/off：流式输出是否平滑限速
-	SettingStreamRate   = "stream_rate"    // 平滑速率上限（字符/秒）
-	SettingHeartbeatSec = "heartbeat_sec"  // SSE 心跳间隔（秒），0 表示关闭
-	SettingVideoPollSec = "video_poll_sec" // 视频任务轮询间隔（秒）
+	SettingStreamSmooth = "stream_smooth"     // on/off：流式输出是否平滑限速
+	SettingStreamRate   = "stream_rate"       // 平滑速率上限（字符/秒）
+	SettingHeartbeatSec = "heartbeat_sec"     // SSE 心跳间隔（秒），0 表示关闭
+	SettingVideoPollSec = "video_poll_sec"    // 视频任务轮询间隔（秒）
 
 	SettingRequestTimeout   = "request_timeout_sec" // 全局上游请求兜底超时（秒）
 	SettingLogRetentionDays = "log_retention_days"  // 调用日志按天保留天数，0 表示不按天清理
@@ -43,11 +45,11 @@ const (
 
 	// ---- 无人值守：健康巡检 ----
 
-	SettingHealthEnabled  = "health_enabled"   // on/off：是否开启后台巡检
-	SettingHealthInterval = "health_interval"  // 巡检间隔（秒）
-	SettingHealthRecover  = "health_recover"   // on/off：巡检发现恢复后自动清除熔断
-	SettingHealthKeep     = "health_keep"      // 每渠道保留多少条巡检记录
-	SettingHealthTimeout  = "health_timeout"   // 单次巡检超时（秒）
+	SettingHealthEnabled  = "health_enabled"  // on/off：是否开启后台巡检
+	SettingHealthInterval = "health_interval" // 巡检间隔（秒）
+	SettingHealthRecover  = "health_recover"  // on/off：巡检发现恢复后自动清除熔断
+	SettingHealthKeep     = "health_keep"     // 每渠道保留多少条巡检记录
+	SettingHealthTimeout  = "health_timeout"  // 单次巡检超时（秒）
 
 	// ---- 无人值守：日报与预警 ----
 
@@ -74,14 +76,14 @@ const (
 
 	// ---- 通知：邮件 ----
 
-	SettingEmailHost     = "email_host"      // SMTP 服务器
-	SettingEmailPort     = "email_port"      // SMTP 端口（465 走 SSL，其余走 STARTTLS）
-	SettingEmailUser     = "email_user"      // SMTP 账号
-	SettingEmailPass     = "email_pass"      // SMTP 密码 / 授权码
-	SettingEmailFrom     = "email_from"      // 发件人显示地址，留空则用账号
-	SettingEmailTo       = "email_to"        // 收件人，多个用逗号分隔
-	SettingEmailEnabled  = "email_enabled"   // on/off：是否启用邮件通道
-	SettingEmailInsecure = "email_insecure"  // on/off：跳过 TLS 证书校验（自签证书场景）
+	SettingEmailHost     = "email_host"     // SMTP 服务器
+	SettingEmailPort     = "email_port"     // SMTP 端口（465 走 SSL，其余走 STARTTLS）
+	SettingEmailUser     = "email_user"     // SMTP 账号
+	SettingEmailPass     = "email_pass"     // SMTP 密码 / 授权码
+	SettingEmailFrom     = "email_from"     // 发件人显示地址，留空则用账号
+	SettingEmailTo       = "email_to"       // 收件人，多个用逗号分隔
+	SettingEmailEnabled  = "email_enabled"  // on/off：是否启用邮件通道
+	SettingEmailInsecure = "email_insecure" // on/off：跳过 TLS 证书校验（自签证书场景）
 
 	SettingPublicURL = "public_url" // 对外访问地址，用于通知里回链到面板
 
@@ -100,15 +102,15 @@ const (
 	SettingBridgeHistory    = "bridge_feishu_history"     // 会话上下文轮数（0=不带上下文，默认 10；30 分钟无消息自动清空）
 
 	// 飞书事件接入方式取值。
-	SettingBridgeTransportWS     = "ws"      // 长连接（SDK WebSocket，默认优先）
+	SettingBridgeTransportWS      = "ws"      // 长连接（SDK WebSocket，默认优先）
 	SettingBridgeTransportWebhook = "webhook" // 回调 URL 推送
 )
 
 // Options 是可由面板动态调整的服务端运行参数。
 // 它覆盖 config.Config 中与运行期行为相关的字段，来源优先级为：面板设置 > 环境变量。
 type Options struct {
-	MaxLogRows   int  `json:"max_log_rows"`
-	LogBody      bool `json:"log_body"`
+	MaxLogRows int  `json:"max_log_rows"`
+	LogBody    bool `json:"log_body"`
 	// LogBodyLimit 是单条日志里请求体/响应体的记录上限（KB），
 	// 超出部分截断并注明，避免长文对话把数据库撑爆。
 	LogBodyLimit int  `json:"log_body_limit_kb"`
@@ -163,8 +165,8 @@ type Options struct {
 	// BackupAuto 为真时，每天到达 BackupHour 时刻把全部配置导出到
 	// 数据目录 backups/ 下，保留最近 BackupKeep 份。
 	BackupAuto bool `json:"backup_auto_enabled"`
-	BackupHour int `json:"backup_auto_hour"`
-	BackupKeep int `json:"backup_auto_keep"`
+	BackupHour int  `json:"backup_auto_hour"`
+	BackupKeep int  `json:"backup_auto_keep"`
 
 	// ---- 无人值守：负载再平衡 ----
 
@@ -194,15 +196,15 @@ type Options struct {
 // defaultOptions 返回由环境变量推导出的默认值，供面板展示与回落使用。
 func (s *Server) defaultOptions() Options {
 	return Options{
-		MaxLogRows:   s.cfg.MaxLogRows,
-		LogBody:      !s.cfg.DisableLogBody,
-		LogBodyLimit: 64,
-		StreamSmooth: s.cfg.StreamSmooth,
-		StreamRate:   s.cfg.StreamRate,
-		HeartbeatSec: s.cfg.HeartbeatSec,
-		VideoPollSec: s.cfg.VideoPollSec,
-		CacheTTL:     settingInt(s.st, SettingCacheTTL, 0, 0, 86400),
-		AlertEnabled: settingBool(s.st, SettingAlertEnabled, false),
+		MaxLogRows:    s.cfg.MaxLogRows,
+		LogBody:       !s.cfg.DisableLogBody,
+		LogBodyLimit:  64,
+		StreamSmooth:  s.cfg.StreamSmooth,
+		StreamRate:    s.cfg.StreamRate,
+		HeartbeatSec:  s.cfg.HeartbeatSec,
+		VideoPollSec:  s.cfg.VideoPollSec,
+		CacheTTL:      settingInt(s.st, SettingCacheTTL, 0, 0, 86400),
+		AlertEnabled:  settingBool(s.st, SettingAlertEnabled, false),
 		AlertMinFails: settingInt(s.st, SettingAlertMinFails, 1, 1, 100),
 
 		ContextPolicy:        relay.ContextPolicyReject,
@@ -243,15 +245,15 @@ func (s *Server) defaultOptions() Options {
 func (s *Server) loadOptions() *Options {
 	def := s.defaultOptions()
 	return &Options{
-		MaxLogRows:   settingInt(s.st, SettingMaxLogRows, def.MaxLogRows, 100, 2000000),
-		LogBody:      settingBool(s.st, SettingLogBody, def.LogBody),
-		LogBodyLimit: settingInt(s.st, SettingLogBodyLimit, def.LogBodyLimit, 1, 2048),
-		StreamSmooth: settingBool(s.st, SettingStreamSmooth, def.StreamSmooth),
-		StreamRate:   settingInt(s.st, SettingStreamRate, def.StreamRate, 5, 100000),
-		HeartbeatSec: settingInt(s.st, SettingHeartbeatSec, def.HeartbeatSec, 0, 3600),
-		VideoPollSec: settingInt(s.st, SettingVideoPollSec, def.VideoPollSec, 1, 3600),
-		CacheTTL:     settingInt(s.st, SettingCacheTTL, def.CacheTTL, 0, 86400),
-		AlertEnabled: settingBool(s.st, SettingAlertEnabled, def.AlertEnabled),
+		MaxLogRows:    settingInt(s.st, SettingMaxLogRows, def.MaxLogRows, 100, 2000000),
+		LogBody:       settingBool(s.st, SettingLogBody, def.LogBody),
+		LogBodyLimit:  settingInt(s.st, SettingLogBodyLimit, def.LogBodyLimit, 1, 2048),
+		StreamSmooth:  settingBool(s.st, SettingStreamSmooth, def.StreamSmooth),
+		StreamRate:    settingInt(s.st, SettingStreamRate, def.StreamRate, 5, 100000),
+		HeartbeatSec:  settingInt(s.st, SettingHeartbeatSec, def.HeartbeatSec, 0, 3600),
+		VideoPollSec:  settingInt(s.st, SettingVideoPollSec, def.VideoPollSec, 1, 3600),
+		CacheTTL:      settingInt(s.st, SettingCacheTTL, def.CacheTTL, 0, 86400),
+		AlertEnabled:  settingBool(s.st, SettingAlertEnabled, def.AlertEnabled),
 		AlertMinFails: settingInt(s.st, SettingAlertMinFails, def.AlertMinFails, 1, 100),
 
 		ContextPolicy: settingEnum(s.st, SettingContextPolicy, def.ContextPolicy,
@@ -289,7 +291,7 @@ func (s *Server) loadOptions() *Options {
 		EmailInsecure: settingBool(s.st, SettingEmailInsecure, def.EmailInsecure),
 		// 密码绝不回传：只暴露「有没有配置」。
 		HasEmailPass: strings.TrimSpace(s.st.GetSetting(SettingEmailPass, "")) != "",
-		PublicURL:    strings.TrimSpace(s.st.GetSetting(SettingPublicURL, "")),
+		PublicURL:    normalizePublicURL(s.st.GetSetting(SettingPublicURL, "")),
 	}
 }
 

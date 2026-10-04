@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/providers", s.handleProviderSave)
 	mux.HandleFunc("PUT /api/providers/{id}", s.handleProviderSave)
 	mux.HandleFunc("DELETE /api/providers/{id}", s.handleProviderDelete)
+	mux.HandleFunc("POST /api/providers/batch", func(w http.ResponseWriter, r *http.Request) { handleProvidersBatch(s, w, r) })
 	mux.HandleFunc("POST /api/providers/test", s.handleProviderTest)
 	mux.HandleFunc("GET /api/providers/health", s.handleProviderHealth)
 	mux.HandleFunc("POST /api/providers/reset", s.handleProviderResetAll)
@@ -139,11 +140,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/models/benchmark", s.handleModelBenchmark)
 	mux.HandleFunc("PUT /api/models/{id}", s.handleModelSave)
 	mux.HandleFunc("DELETE /api/models/{id}", s.handleModelDelete)
+	mux.HandleFunc("POST /api/models/batch", func(w http.ResponseWriter, r *http.Request) { handleModelsBatch(s, w, r) })
 
 	mux.HandleFunc("GET /api/keys", s.handleKeyList)
 	mux.HandleFunc("POST /api/keys", s.handleKeySave)
 	mux.HandleFunc("PUT /api/keys/{id}", s.handleKeySave)
 	mux.HandleFunc("DELETE /api/keys/{id}", s.handleKeyDelete)
+	mux.HandleFunc("POST /api/keys/batch", func(w http.ResponseWriter, r *http.Request) { handleKeysBatch(s, w, r) })
+	// ---------- 主模型穿透：AI 诊断 / 自检解读 ----------
+	mux.HandleFunc("POST /api/logs/diagnose", func(w http.ResponseWriter, r *http.Request) { s.handleLogDiagnose(w, r) })
+	mux.HandleFunc("POST /api/selfcheck/interpret", func(w http.ResponseWriter, r *http.Request) { s.handleSelfcheckInterpret(w, r) })
 
 	mux.HandleFunc("GET /api/skills", s.handleSkillList)
 	mux.HandleFunc("POST /api/skills", s.handleSkillSave)
@@ -155,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/tasks/{id}", s.handleTaskDelete)
 
 	mux.HandleFunc("GET /api/logs", s.handleLogList)
+	mux.HandleFunc("GET /api/logs/{id}", s.handleLogDetail)
 	mux.HandleFunc("DELETE /api/logs", s.handleLogClear)
 
 	mux.HandleFunc("GET /api/setup", s.handleSetupStatus)
@@ -162,11 +169,24 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/settings", s.handleSettingsGet)
 	mux.HandleFunc("POST /api/settings", s.handleSettingsSave)
+	// 穿透对外链接连通性校验（用填的地址真实请求 /healthz）
+	mux.HandleFunc("POST /api/settings/public-url-check", s.handlePublicURLCheck)
 
 	// ---------- 飞书深度整合：入站事件桥（公开端点，由 Encrypt Key / Token 保护） ----------
 	mux.HandleFunc("POST /webhook/feishu", s.handleFeishuWebhook)
 	mux.HandleFunc("POST /api/bridge/feishu/test", s.handleBridgeFeishuTest)
 	mux.HandleFunc("GET /api/bridge/feishu/status", s.handleBridgeFeishuStatus)
+
+	// ---------- 用户门户：凭对外秘钥认证，只读自己的用量/模型/日志 ----------
+	// 公开信息（无需秘钥）：让没拿到秘钥的访客也能看到服务门面，但拿不到任何可调用能力。
+	mux.HandleFunc("GET /api/user/public", s.handleUserPublic)
+	mux.HandleFunc("GET /api/user/me", s.handleUserMe)
+	mux.HandleFunc("GET /api/user/models", s.handleUserModels)
+	mux.HandleFunc("GET /api/user/logs", s.handleUserLogs)
+	mux.HandleFunc("GET /api/user/model-intro", s.handleUserModelIntro)
+	mux.HandleFunc("POST /api/user/model-intro", s.handleUserModelIntro)
+	mux.HandleFunc("GET /api/portal/links", s.handlePortalLinks)
+	mux.HandleFunc("POST /api/portal/links", s.handlePortalSave)
 
 	// ---------- 无人值守：自检、巡检历史、通知测试 ----------
 	mux.HandleFunc("GET /api/selfcheck", s.handleSelfCheck)
@@ -182,9 +202,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/connectors/generate", s.handleConnectorGenerate)
 	mux.HandleFunc("POST /api/connectors/try", s.handleConnectorTry)
 
+	// ---------- 管理面板锁（10 连点 + 管理员密码，接口逐请求带密码） ----------
+	mux.HandleFunc("GET /api/admin/status", s.handleAdminStatus)
+	mux.HandleFunc("POST /api/admin/unlock", s.handleAdminUnlock)
+
 	// ---------- 前端静态资源 ----------
 	mux.Handle("/", s.staticHandler())
-	return gzipMiddleware(logRequests(mux))
+	// withAdminGate 包在最外层：裸路由与 /v1/* 不受影响，只锁管理类 /api/*。
+	return s.withAdminGate(gzipMiddleware(logRequests(mux)))
 }
 
 // ---------- 中间件 ----------

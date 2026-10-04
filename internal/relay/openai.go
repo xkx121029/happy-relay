@@ -100,7 +100,13 @@ func hasImagePart(parts []ContentPart) bool {
 }
 
 func (a *OpenAIAdapter) Chat(ctx context.Context, up Upstream, m store.Model, in *ChatInput, emit StreamFunc) (*ChatOutput, error) {
-	resp, err := doJSON(ctx, up, "POST", a.url(up, "/chat/completions"), authHeader(up), buildBody(m, in))
+	body := buildBody(m, in)
+	// in.Stream 只决定解析方式，wire 请求体必须同步带上 stream 标记，
+	// 否则上游会返回完整 JSON，调用方误以为自己拿到了流式响应。
+	if in.Stream && emit != nil {
+		body["stream"] = true
+	}
+	resp, err := doJSON(ctx, up, "POST", a.url(up, "/chat/completions"), authHeader(up), body)
 	if err != nil {
 		return nil, err
 	}

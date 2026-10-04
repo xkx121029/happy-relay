@@ -19,11 +19,29 @@ func daysAgoStart(days int) string {
 }
 
 // APIKeyDailyUsage 返回某把秘钥当天的调用次数与 token 用量，供配额校验使用。
+// 热路径优化：读内存缓存（随日志写入增量维护），缓存缺失/跨天才回源查一次库；
+// 此前每次调用都要对今日日志做 COUNT+SUM，日志量大时是 /v1 最重的隐藏开销。
 func (s *Store) APIKeyDailyUsage(name string) (int64, int64, error) {
+	today := time.Now().Format("2006-01-02")
+	s.keyUsageMu.Lock()
+	e := s.keyUsage[name]
+	if e != nil && e.day == today {
+		calls, tokens := e.calls, e.tokens
+		s.keyUsageMu.Unlock()
+		return calls, tokens, nil
+	}
+	s.keyUsageMu.Unlock()
+
 	var calls, tokens int64
 	err := s.db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(prompt_tokens+completion_tokens),0)
 		FROM usage_logs WHERE api_key_name=? AND created_at>=?`, name, todayStart()).Scan(&calls, &tokens)
-	return calls, tokens, err
+	if err != nil {
+		return 0, 0, err
+	}
+	s.keyUsageMu.Lock()
+	s.keyUsage[name] = &dailyUsage{day: today, calls: calls, tokens: tokens}
+	s.keyUsageMu.Unlock()
+	return calls, tokens, nil
 }
 
 // ModelStat 是按对外模型维度聚合的用量。

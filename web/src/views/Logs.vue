@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Modal from '../components/Modal.vue'
 import { api, type UsageLog } from '../api'
 import { confirmDialog, state, toast } from '../store'
-import { capLabel, fmtTime, fmtNumber, prettyJSON } from '../utils'
+import { capLabel, fmtTime, fmtNumber, prettyJSON, renderMarkdown } from '../utils'
 
 const list = ref<UsageLog[]>([])
 const loading = ref(true)
@@ -160,6 +160,48 @@ async function clearAll() {
 function ok(l: UsageLog) {
   return l.status < 400 && !l.error
 }
+
+// ---------- AI 诊断（主模型撰写，按日志 id 服务端缓存） ----------
+const diagText = ref('')
+const diagBusy = ref(false)
+const diagCached = ref(false)
+
+async function diagnose(refresh = false) {
+  if (!detail.value || diagBusy.value) return
+  diagBusy.value = true
+  try {
+    const r = await api.diagnoseLog(detail.value.id, refresh)
+    diagText.value = r.diagnosis
+    diagCached.value = r.cached
+  } catch (e: any) {
+    toast(e.message || '诊断失败', 'error')
+  } finally {
+    diagBusy.value = false
+  }
+}
+// 打开新日志详情时重置诊断区；失败调用自动触发诊断。
+watch(detail, (d) => {
+  diagText.value = ''
+  diagCached.value = false
+  if (d && !ok(d)) diagnose()
+})
+
+// openDetail 列表数据只带 600 字符正文预览（列表性能优化），
+// 打开详情时按 id 取一次全量替换；失败保持列表版本，不打断查看。
+const LIST_PREVIEW_LEN = 600
+async function openDetail(l: UsageLog) {
+  detail.value = l
+  const truncated =
+    (l.request_body && l.request_body.length >= LIST_PREVIEW_LEN) ||
+    (l.response_preview && l.response_preview.length >= LIST_PREVIEW_LEN)
+  if (!truncated) return
+  try {
+    const full = await api.getLog(l.id)
+    if (detail.value?.id === l.id) detail.value = full
+  } catch {
+    /* 静默：预览够看 */
+  }
+}
 </script>
 
 <template>
@@ -246,7 +288,7 @@ function ok(l: UsageLog) {
             <td class="num muted nowrap">{{ fmtNumber(l.prompt_tokens + l.completion_tokens) }}</td>
             <td>
               <div class="row" style="justify-content: flex-end">
-                <button class="btn btn-sm btn-ghost" @click="detail = l">查看</button>
+                <button class="btn btn-sm btn-ghost" @click="openDetail(l)">查看</button>
               </div>
             </td>
           </tr>
@@ -307,6 +349,24 @@ function ok(l: UsageLog) {
       <div v-if="detail.error" class="field">
         <div class="field-label">错误信息</div>
         <pre class="code-block" style="color: var(--danger)">{{ detail.error }}</pre>
+      </div>
+
+      <!-- AI 诊断：失败自动触发，也可手动重跑 -->
+      <div class="field">
+        <div class="row" style="justify-content: space-between; margin-bottom: 8px">
+          <div class="field-label" style="margin: 0">
+            🤖 AI 诊断
+            <span v-if="diagCached && diagText" class="muted" style="font-size: 11.5px; margin-left: 6px">缓存结果</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" :disabled="diagBusy" @click="diagnose(true)">
+            {{ diagBusy ? '主模型分析中…' : diagText ? '↻ 重新诊断' : '🤖 AI 诊断' }}
+          </button>
+        </div>
+        <div v-if="diagBusy && !diagText" class="muted" style="font-size: 13px; padding: 10px 0">
+          <span class="diag-spinner" /> 主模型正在分析这条调用…
+        </div>
+        <div v-else-if="diagText" class="md diag-md" v-html="renderMarkdown(diagText)"></div>
+        <div v-else class="muted" style="font-size: 13px">让主模型基于这条日志的模型/渠道/状态码/错误片段给出根因与修复建议。</div>
       </div>
 
       <div v-if="detail.request_body || detail.response_preview" class="field">

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { RuntimeOptions, SelfCheck } from '../api'
 import { api } from '../api'
 import { applyPrefs, models, panelTitle, state, toast } from '../store'
+import { renderMarkdown } from '../utils'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -10,6 +11,7 @@ const backupBusy = ref(false)
 // emailPassSet 表示库里已经存了 SMTP 密码；密码不回传明文，
 // 输入框留空 + 这个标记就足以告诉用户「已配置」。
 const emailPassSet = ref(false)
+
 const notifying = ref(false)
 const checking = ref(false)
 const selfCheck = ref<SelfCheck | null>(null)
@@ -84,6 +86,7 @@ const form = reactive({
   email_to: '',
   email_insecure: false,
   public_url: '',
+  admin_password: '',
 })
 
 const chatModels = computed(() => models.value.filter((m) => m.enabled && m.capability === 'chat'))
@@ -186,7 +189,6 @@ const SECTION_KEYS: Record<SectionId, string[]> = {
     'email_from',
     'email_to',
     'email_insecure',
-    'public_url',
   ],
   unattended: [
     'health_enabled',
@@ -205,7 +207,7 @@ const SECTION_KEYS: Record<SectionId, string[]> = {
     'backup_auto_hour',
     'backup_auto_keep',
   ],
-  backup: [],
+  backup: ['public_url'],
 }
 
 function sectionDirty(id: SectionId): boolean {
@@ -338,6 +340,7 @@ async function load() {
       : (effective.value?.email_insecure ?? false)
     emailPassSet.value = effective.value?.has_email_pass ?? false
     form.email_pass = ''
+    adminPasswordSet.value = s.admin_password_set === '1'
 
     panelTitle.value = form.panel_title || '模型中转站'
     document.title = panelTitle.value
@@ -375,7 +378,7 @@ async function save() {
     const payload: Record<string, string> = {
       panel_title: form.panel_title.trim(),
       system_model: form.system_model,
-      auto_force_tier: form.auto_force_tier || '',
+        auto_force_tier: form.auto_force_tier || '',
       auto_exclude_models: form.auto_exclude_models.trim(),
       auto_hard_keywords: form.auto_hard_keywords.trim(),
       default_page: form.default_page,
@@ -466,6 +469,63 @@ async function save() {
 
 const baseURL = computed(() => `${location.origin}/v1`)
 
+// ---- 管理员密码（管理面板锁） ----
+const adminPasswordSet = ref(false)
+
+async function saveAdminPassword() {
+  const pw = (form.admin_password || '').trim()
+  if (!pw) return
+  saving.value = true
+  try {
+    const saved = await api.saveSettings({ admin_password: pw })
+    form.admin_password = ''
+    adminPasswordSet.value = saved.admin_password_set === '1'
+    state.meta = await api.getMeta()
+    toast('管理员密码已生效：面板已上锁，接口需携带密码')
+  } catch (e: any) {
+    toast(e.message || '设置失败', 'error')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function clearAdminPassword() {
+  if (!window.confirm('关闭保护后，任何能访问本服务的人都能直接打开管理面板，确定吗？')) return
+  saving.value = true
+  try {
+    const saved = await api.saveSettings({ admin_password_clear: '1' })
+    adminPasswordSet.value = saved.admin_password_set === '1'
+    state.meta = await api.getMeta()
+    toast('已关闭管理面板保护')
+  } catch (e: any) {
+    toast(e.message || '操作失败', 'error')
+  } finally {
+    saving.value = false
+  }
+}
+
+// publicBaseURL 配了穿透对外链接后，接入信息里优先展示它（别人拿到的就是穿透地址）。
+const publicBaseURL = computed(() => {
+  const u = (form.public_url || '').trim().replace(/\/+$/, '')
+  return u ? (u.includes('://') ? u : 'https://' + u) + '/v1' : ''
+})
+
+// ---- 穿透对外链接连通性测试 ----
+const pubChecking = ref(false)
+const pubCheckResult = ref<{ ok: boolean; url: string; latency_ms?: number; error?: string } | null>(null)
+
+async function testPublicUrl() {
+  pubChecking.value = true
+  pubCheckResult.value = null
+  try {
+    pubCheckResult.value = await api.checkPublicUrl(form.public_url.trim())
+  } catch (e: any) {
+    pubCheckResult.value = { ok: false, url: form.public_url, error: e?.message || '测试请求失败' }
+  } finally {
+    pubChecking.value = false
+  }
+}
+
 // exportBackup 把全部配置下载成 JSON 文件。
 async function exportBackup() {
   backupBusy.value = true
@@ -512,10 +572,28 @@ async function runCheck() {
   try {
     selfCheck.value = await api.selfCheck()
     showCheck.value = true
+    checkText.value = '' // 新结果 → 旧解读作废
   } catch (e: any) {
     toast(e.message || '自检失败', 'error')
   } finally {
     checking.value = false
+  }
+}
+
+// ---------- AI 解读（主模型把自检发现转成行动建议） ----------
+const checkText = ref('')
+const checkAiBusy = ref(false)
+
+async function interpretCheck() {
+  if (checkAiBusy.value) return
+  checkAiBusy.value = true
+  try {
+    const r = await api.interpretSelfCheck()
+    checkText.value = r.interpretation
+  } catch (e: any) {
+    toast(e.message || '解读失败', 'error')
+  } finally {
+    checkAiBusy.value = false
   }
 }
 
@@ -770,6 +848,43 @@ const checkSummary = computed(() => {
               <option v-for="p in pageOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
             </select>
             <div class="hint">打开面板时自动进入的页面。</div>
+          </div>
+        </section>
+
+        <!-- 管理员密码（管理面板锁） -->
+        <section v-if="activeSection === 'general'" class="card" style="margin-top: 16px">
+          <h3 class="card-title">管理员密码</h3>
+          <p class="muted" style="margin-top: 0">
+            设置后管理面板上锁：裸路由与用户门户照常对外，管理类接口需逐请求携带密码。
+            入口是连点左上角 sk- 图标 10 次后输入密码。
+          </p>
+          <div class="field" style="margin-bottom: 0">
+            <label>新密码</label>
+            <div class="row">
+              <input
+                v-model="form.admin_password"
+                class="input"
+                style="flex: 1"
+                type="password"
+                placeholder="留空则不修改"
+                autocomplete="new-password"
+              />
+              <button class="btn btn-primary" :disabled="saving || !form.admin_password" @click="saveAdminPassword">
+                {{ saving ? '保存中…' : '设置密码' }}
+              </button>
+            </div>
+            <div class="hint">
+              当前状态：<b>{{ adminPasswordSet ? '已启用保护' : '未设置（面板不锁）' }}</b>。
+              密码只存哈希（sha256+随机盐），库里不落明文。
+              <template v-if="adminPasswordSet">
+                <button class="btn btn-sm btn-ghost" style="color: var(--danger); margin-left: 8px" @click="clearAdminPassword">
+                  关闭保护
+                </button>
+              </template>
+            </div>
+            <div class="hint" style="margin-top: 8px">
+              忘记密码时的救场通道：给服务加环境变量 <code>RELAY_ADMIN_PASSWORD</code> 后重启即可重新进入面板。
+            </div>
           </div>
         </section>
 
@@ -1172,7 +1287,20 @@ const checkSummary = computed(() => {
             <button class="btn" :class="{ 'is-loading': checking }" :disabled="checking" @click="runCheck">
               {{ checking ? '检查中…' : '运行一次自检' }}
             </button>
+            <button
+              v-if="selfCheck"
+              class="btn"
+              :class="checkText ? '' : 'btn-ghost'"
+              :disabled="checkAiBusy"
+              @click="interpretCheck"
+            >
+              {{ checkAiBusy ? '主模型解读中…' : checkText ? '↻ 重新解读' : '🤖 AI 解读' }}
+            </button>
             <span v-if="selfCheck" class="muted" style="font-size: 12.5px">{{ checkSummary }}</span>
+          </div>
+          <div v-if="checkText" class="diag-md" style="margin-top: 12px" v-html="renderMarkdown(checkText)"></div>
+          <div v-else-if="checkAiBusy" class="muted" style="font-size: 13px; margin-top: 10px">
+            <span class="diag-spinner" /> 主模型正在把自检发现整理成行动建议…
           </div>
           <div v-if="showCheck && selfCheck" class="checklist">
             <div
@@ -1508,7 +1636,10 @@ const checkSummary = computed(() => {
               class="input"
               placeholder="https://relay.example.com"
             />
-            <div class="hint">填了之后，通知里会附上可直接点开面板的链接。</div>
+            <div class="hint">
+              填了之后，通知里会附上可直接点开面板的链接。
+              穿透后的对外链接在「备份与接入 → 客户端接入」里配置和测试。
+            </div>
           </div>
 
           <div class="row" style="margin-top: 18px">
@@ -1530,12 +1661,50 @@ const checkSummary = computed(() => {
             <p class="muted" style="margin-top: 0">任何兼容 OpenAI 的客户端填这两项即可使用：</p>
             <div class="meta-list">
               <dt>Base URL</dt>
-              <dd class="mono">{{ baseURL }}</dd>
+              <dd class="mono">{{ publicBaseURL || baseURL }}</dd>
               <dt>API Key</dt>
               <dd class="mono">在「秘钥」页创建后复制</dd>
             </div>
             <div class="hint" style="margin-top: 16px">
               对外接口包括 /v1/chat/completions、/v1/images/generations、/v1/embeddings 与任务式的 /v1/videos。
+            </div>
+          </section>
+
+          <section class="card" style="margin-bottom: 16px">
+            <h3 class="card-title">穿透对外链接</h3>
+            <p class="muted" style="margin-top: 0">
+              用 frp / Cloudflare Tunnel / 花生壳等把本服务穿透到公网后，把外网地址填在这里。
+              通知回链、给别人的分享链接都会用它；留空则按浏览器当前访问地址推断。
+            </p>
+            <div class="field">
+              <label>对外链接</label>
+              <div class="row">
+                <input
+                  v-model="form.public_url"
+                  class="input"
+                  style="flex: 1"
+                  placeholder="https://relay.example.com（不带尾部斜杠）"
+                  @keydown.enter="testPublicUrl"
+                />
+                <button
+                  class="btn"
+                  :class="{ 'is-loading': pubChecking }"
+                  :disabled="pubChecking"
+                  @click="testPublicUrl"
+                >
+                  {{ pubChecking ? '测试中…' : '测试连通' }}
+                </button>
+              </div>
+              <div v-if="pubCheckResult" class="hint" :style="{ color: pubCheckResult.ok ? 'var(--ok, #22a06b)' : 'var(--bad, #d64545)' }">
+                <template v-if="pubCheckResult.ok">
+                  ✓ 连通正常（{{ pubCheckResult.url }}，{{ pubCheckResult.latency_ms }}ms）——穿透已生效，可以把这个地址和秘钥发给客户端用了
+                </template>
+                <template v-else>✗ {{ pubCheckResult.error }}</template>
+              </div>
+              <div v-else class="hint">
+                没填 scheme 时默认按 https 处理；http 穿透请显式写 http://。
+                测试是服务端真实请求一次「对外链接/healthz」，通没通当场见分晓。
+              </div>
             </div>
           </section>
 
